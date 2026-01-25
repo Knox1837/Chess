@@ -30,6 +30,71 @@ class ChessMovement:
             return chess.square(col, row)
         return None
     
+    def handle_click(self, pos):
+        """Handle click for piece movement (simple two-click method)"""
+        square = self.get_square_from_mouse(pos)
+        
+        if square is None:
+            return False
+        
+        piece = self.board.piece_at(square)
+        
+        # CASE 1: Clicking on an empty square when a piece is selected
+        if self.selected_square is not None and square != self.selected_square:
+            # Try to move to this square
+            for move in self.valid_moves:
+                if move.to_square == square:
+                    self.board.push(move)
+                    self.last_move = move
+                    self.selected_square = None
+                    self.valid_moves = []
+                    return True
+            
+            # If clicked empty square but not a valid move, select the piece at that square if any
+            if piece:
+                # Check if it's current player's piece
+                if (self.board.turn == chess.WHITE and piece.color == chess.WHITE) or \
+                   (self.board.turn == chess.BLACK and piece.color == chess.BLACK):
+                    self.selected_square = square
+                    self.valid_moves = [move for move in self.board.legal_moves 
+                                      if move.from_square == square]
+                    return True
+            
+            # Clicked empty square that's not a valid move - deselect
+            self.selected_square = None
+            self.valid_moves = []
+            return False
+        
+        # CASE 2: Clicking on a piece
+        if piece:
+            # If clicking on a piece when another piece is selected
+            if self.selected_square is not None:
+                # If clicking same piece again, deselect it
+                if square == self.selected_square:
+                    self.selected_square = None
+                    self.valid_moves = []
+                    return True
+                
+                # If clicking different piece, check if it's a valid capture
+                for move in self.valid_moves:
+                    if move.to_square == square:
+                        self.board.push(move)
+                        self.last_move = move
+                        self.selected_square = None
+                        self.valid_moves = []
+                        return True
+            
+            # Select this piece (if it's current player's turn)
+            if (self.board.turn == chess.WHITE and piece.color == chess.WHITE) or \
+               (self.board.turn == chess.BLACK and piece.color == chess.BLACK):
+                self.selected_square = square
+                self.valid_moves = [move for move in self.board.legal_moves 
+                                  if move.from_square == square]
+                return True
+        
+        # CASE 3: Clicking empty square with nothing selected - do nothing
+        return False
+
     def handle_mouse_down(self, pos):
         """Handle mouse button down events"""
         square = self.get_square_from_mouse(pos)
