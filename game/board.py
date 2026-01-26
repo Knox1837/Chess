@@ -67,9 +67,11 @@ def draw_pieces(win, board):
 
 def draw_status(win, text):
     """Draw game status text"""
-    font = pygame.font.SysFont(None, 30)
-    text_surface = font.render(text, True, (0, 0, 0))
-    win.blit(text_surface, (WIDTH/2, HEIGHT/2)) #centered
+    if text:
+        font = pygame.font.SysFont(None, 30)
+        text_surface = font.render(text, True, (0, 0, 0))
+        text_rect = text_surface.get_rect(center=(WIDTH//2, HEIGHT//2))
+        win.blit(text_surface, text_rect)
 
 def main():
     board = chess.Board()
@@ -85,16 +87,28 @@ def main():
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left mouse button
-                    movement.handle_click(event.pos)
+                    movement.handle_mouse_down(event.pos) #handles both click and drag start
             
             elif event.type == pygame.KEYDOWN:
                 movement.handle_keydown(event)
+                
+            elif event.type == pygame.MOUSEBUTTONUP: #mouse released
+                if event.button == 1: #==1 is the mouse button left click
+                    # Handle drag completion
+                    movement.handle_mouse_up(event.pos)
+                    # Also handle click
+                    movement.handle_click(event.pos)
+
+            elif event.type == pygame.MOUSEMOTION:
+                # Update drag position
+                movement.handle_mouse_motion(event.pos)
         
         # Draw everything
         draw_board(WIN)
         movement.draw_highlights(WIN)
         draw_pieces(WIN, board)
-        
+        movement.draw_dragged_piece(WIN, PIECE_IMAGES)
+
         # Draw game status
         status_text = movement.get_game_status()
         draw_status(WIN, status_text)

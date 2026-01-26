@@ -11,7 +11,7 @@ class ChessMovement:
         self.valid_moves = []
         self.dragged_piece = None
         self.drag_pos = None
-        
+        self.is_dragging = False
         # Colors for highlights
         self.highlight_color = (255, 255, 0, 100)  # Yellow with transparency
         self.valid_move_color = (0, 255, 0, 100)   # Green with transparency
@@ -30,8 +30,37 @@ class ChessMovement:
             return chess.square(col, row)
         return None
     
+    def make_move(self, to_square):
+        """Try to make a move from selected square to destination square"""
+        if self.selected_square is None:
+            return False
+            
+        for move in self.valid_moves:
+            if move.to_square == to_square:
+                self.board.push(move)
+                self.reset_selection()
+                return True
+        return False
+
+    def select_piece(self, square):
+        """Select a piece and get its valid moves"""
+        piece = self.board.piece_at(square)
+        if not piece:
+            return False
+            
+        # Check if it's the current player's piece
+        if (self.board.turn == chess.WHITE and piece.color == chess.WHITE) or \
+           (self.board.turn == chess.BLACK and piece.color == chess.BLACK):
+            
+            self.selected_square = square
+            self.valid_moves = [move for move in self.board.legal_moves 
+                              if move.from_square == square]
+            self.dragged_piece = piece
+            return True
+        return False
+
     def handle_click(self, pos):
-        """Handle click for piece movement (simple two-click method)"""
+        """Handle click for piece movement (two-click method)"""
         square = self.get_square_from_mouse(pos)
         
         if square is None:
@@ -39,64 +68,34 @@ class ChessMovement:
         
         piece = self.board.piece_at(square)
         
-        # CASE 1: Clicking on an empty square when a piece is selected
-        if self.selected_square is not None and square != self.selected_square:
-            # Try to move to this square
-            for move in self.valid_moves:
-                if move.to_square == square:
-                    self.board.push(move)
-                    self.last_move = move
-                    self.selected_square = None
-                    self.valid_moves = []
-                    return True
+        # If we already have a piece selected
+        if self.selected_square is not None:
+            # Clicking the same piece again - deselect it
+            if square == self.selected_square:
+                self.reset_selection()
+                return True
             
-            # If clicked empty square but not a valid move, select the piece at that square if any
+            # Clicking a different square - try to move
+            if self.make_move(square):
+                return True
+            
+            # If move failed, maybe clicked a different piece
             if piece:
-                # Check if it's current player's piece
-                if (self.board.turn == chess.WHITE and piece.color == chess.WHITE) or \
-                   (self.board.turn == chess.BLACK and piece.color == chess.BLACK):
-                    self.selected_square = square
-                    self.valid_moves = [move for move in self.board.legal_moves 
-                                      if move.from_square == square]
-                    return True
+                self.select_piece(square)
+                return True
             
-            # Clicked empty square that's not a valid move - deselect
-            self.selected_square = None
-            self.valid_moves = []
+            # Clicked empty square that's not a valid move
+            self.reset_selection()
             return False
         
-        # CASE 2: Clicking on a piece
+        # No piece selected yet - try to select one
         if piece:
-            # If clicking on a piece when another piece is selected
-            if self.selected_square is not None:
-                # If clicking same piece again, deselect it
-                if square == self.selected_square:
-                    self.selected_square = None
-                    self.valid_moves = []
-                    return True
-                
-                # If clicking different piece, check if it's a valid capture
-                for move in self.valid_moves:
-                    if move.to_square == square:
-                        self.board.push(move)
-                        self.last_move = move
-                        self.selected_square = None
-                        self.valid_moves = []
-                        return True
-            
-            # Select this piece (if it's current player's turn)
-            if (self.board.turn == chess.WHITE and piece.color == chess.WHITE) or \
-               (self.board.turn == chess.BLACK and piece.color == chess.BLACK):
-                self.selected_square = square
-                self.valid_moves = [move for move in self.board.legal_moves 
-                                  if move.from_square == square]
-                return True
+            return self.select_piece(square)
         
-        # CASE 3: Clicking empty square with nothing selected - do nothing
         return False
-
+    
     def handle_mouse_down(self, pos):
-        """Handle mouse button down events"""
+        """Handle mouse button down events - start drag"""
         square = self.get_square_from_mouse(pos)
         
         if square is not None:
@@ -111,13 +110,15 @@ class ChessMovement:
                     self.valid_moves = [move for move in self.board.legal_moves 
                                       if move.from_square == square]
                     
-                    self.dragged_piece = piece# For dragging visualization
+                    self.dragged_piece = piece  # For dragging visualization
                     self.drag_pos = pos
+                    self.is_dragging = True  # Set dragging flag
                     return True  # Piece selected
                 else:
                     # If clicking opponent's piece when not selected, deselect
                     self.selected_square = None
                     self.valid_moves = []
+                    self.is_dragging = False
                     return False
             else:
                 # If clicking empty square when a piece is selected, try to move
@@ -140,43 +141,45 @@ class ChessMovement:
         return False
     
     def handle_mouse_up(self, pos):
-        """Handle mouse button up events (for drag and drop)"""
-        if self.selected_square is not None and self.drag_pos is not None:
+        """Complete drag operation"""
+        if self.selected_square is not None and self.is_dragging:
             square = self.get_square_from_mouse(pos)
             
-            if square is not None and square != self.selected_square:
-                move = None
-                for legal_move in self.valid_moves: # Find the matching move
-                    if legal_move.to_square == square:
-                        move = legal_move
-                        break
-                
-                if move:
-                    self.board.push(move)
-                    self.reset_selection()
-                    return True  # Move made
+            if square is not None:
+                # Try to make the move
+                if self.make_move(square):
+                    self.is_dragging = False
+                    return True
             
+            # Cancel drag if invalid
             self.reset_selection()
+            self.is_dragging = False
             return False
         
         return False
     
     def handle_mouse_motion(self, pos):
-        """Handle mouse motion for dragging"""
-        if self.selected_square is not None and self.dragged_piece is not None:
+        """Update drag position for drag and drop"""
+        if self.is_dragging and self.dragged_piece is not None:
             self.drag_pos = pos
     
-    def handle_keydown(self, event): # for undo and reset
+    def handle_keydown(self, event):
         """Handle keyboard events"""
         if event.key == pygame.K_z and (pygame.key.get_mods() & pygame.KMOD_CTRL):
-            if self.board.move_stack:# Ctrl+Z to undo move
+            if self.board.move_stack:
                 self.board.pop()
                 self.reset_selection()
+                self.is_dragging = False
                 return True
         elif event.key == pygame.K_r:
-            # R to reset the board
             self.board.reset()
             self.reset_selection()
+            self.is_dragging = False
+            return True
+        elif event.key == pygame.K_ESCAPE:
+            # Cancel selection/drag
+            self.reset_selection()
+            self.is_dragging = False
             return True
         return False
     
@@ -186,7 +189,8 @@ class ChessMovement:
         self.valid_moves = []
         self.dragged_piece = None
         self.drag_pos = None
-    
+        self.is_dragging = False
+
     def draw_highlights(self, win):
         """Draw highlights for selected square and valid moves"""
         if self.selected_square is not None:
@@ -203,10 +207,10 @@ class ChessMovement:
                 col = chess.square_file(move.to_square)
                 self.valid_move_surface.fill(self.valid_move_color)
                 win.blit(self.valid_move_surface, (col * self.square_size, row * self.square_size))
-    
+
     def draw_dragged_piece(self, win, piece_images):
         """Draw the piece being dragged on top of everything"""
-        if self.dragged_piece is not None and self.drag_pos is not None:
+        if self.is_dragging and self.dragged_piece is not None and self.drag_pos is not None:
             symbol = self.dragged_piece.symbol()
             color = 'w' if self.dragged_piece.color == chess.WHITE else 'b'
             if symbol.lower() == "n":
@@ -218,18 +222,19 @@ class ChessMovement:
                 # Center the piece on the cursor
                 piece_rect = piece_images[key].get_rect(center=self.drag_pos)
                 win.blit(piece_images[key], piece_rect)
-    
+
     def get_game_status(self):
         """Get current game status as text"""
-        if self.board.is_checkmate(): # from chess library
+        if self.board.is_checkmate():
             return "Checkmate!"
         elif self.board.is_stalemate():
             return "Stalemate!"
         elif self.board.is_check():
             return "Check!"
         else:
-            #return "White to move" if self.board.turn == chess.WHITE else "Black to move"
-            return
+           # return "White to move" if self.board.turn == chess.WHITE else "Black to move"
+           return
+
     
     def reset_game(self):
         """Reset the entire game"""
