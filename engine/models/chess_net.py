@@ -6,15 +6,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SimpleChessNet(nn.Module):
-    """
-    Simple CNN for chess - compatible with your GUI
-    Input: 13 x 8 x 8 tensor
-    Outputs: Position evaluation (-1 to 1) and move probabilities
-    """
+    """Neural network for chess evaluation"""
     def __init__(self):
         super().__init__()
-        
-        # Feature extraction
+        # Input: 13 channels (6 white pieces + 6 black pieces + turn)
         self.conv1 = nn.Conv2d(13, 64, 3, padding=1)
         self.conv2 = nn.Conv2d(64, 128, 3, padding=1)
         self.conv3 = nn.Conv2d(128, 256, 3, padding=1)
@@ -28,31 +23,22 @@ class SimpleChessNet(nn.Module):
         self.value_fc2 = nn.Linear(256, 128)
         self.value_out = nn.Linear(128, 1)
         
-        # Policy head (move prediction) - simplified for now
-        self.policy_conv = nn.Conv2d(256, 32, 1)
-        self.policy_fc = nn.Linear(32 * 8 * 8, 256)
-        
         self.dropout = nn.Dropout(0.3)
     
     def forward(self, x):
-        # Feature extraction
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
+        # x shape: (batch, 13, 8, 8)
+        x = torch.relu(self.bn1(self.conv1(x)))
+        x = torch.relu(self.bn2(self.conv2(x)))
+        x = torch.relu(self.bn3(self.conv3(x)))
         
         # Value head
-        value = x.view(x.size(0), -1)
-        value = F.relu(self.value_fc1(value))
+        value = x.view(x.size(0), -1)  # Flatten
+        value = torch.relu(self.value_fc1(value))
         value = self.dropout(value)
-        value = F.relu(self.value_fc2(value))
-        value = torch.tanh(self.value_out(value))
+        value = torch.relu(self.value_fc2(value))
+        value = torch.tanh(self.value_out(value))  # Output between -1 and 1
         
-        # Policy head
-        policy = F.relu(self.policy_conv(x))
-        policy = policy.view(policy.size(0), -1)
-        policy = self.policy_fc(policy)
-        
-        return value, policy
+        return value
 
 class PositionEvaluator(nn.Module):
     """

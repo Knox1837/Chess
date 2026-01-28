@@ -2,6 +2,6 @@
 Data processing module for chess engine
 """
 
-from .pgn_processor import LichessPGNProcessor
+from .pgn_processor import PGNProcessor
 
-__all__ = ['LichessPGNProcessor']
+__all__ = ['PGNProcessor']

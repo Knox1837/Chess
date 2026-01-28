@@ -2,6 +2,6 @@
 Training utilities for chess engine
 """
 
-from .train_basic import ChessTrainer
+from .train_basic import ChessAITrainer
 
-__all__ = ['ChessTrainer']
+__all__ = ['ChessAITrainer']
