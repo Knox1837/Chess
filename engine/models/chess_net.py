@@ -1,15 +1,18 @@
-"""
-Neural network for chess position evaluation
-"""
+"""Neural network for chess position evaluation"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 class SimpleChessNet(nn.Module):
-    """Neural network for chess evaluation"""
+    """
+    Simple CNN for chess - compatible with your GUI
+    Input: 13 x 8 x 8 tensor
+    Output: Position evaluation (-1 to 1)
+    """
     def __init__(self):
         super().__init__()
-        # Input: 13 channels (6 white pieces + 6 black pieces + turn)
+        
+        # Feature extraction
         self.conv1 = nn.Conv2d(13, 64, 3, padding=1)
         self.conv2 = nn.Conv2d(64, 128, 3, padding=1)
         self.conv3 = nn.Conv2d(128, 256, 3, padding=1)
@@ -18,7 +21,7 @@ class SimpleChessNet(nn.Module):
         self.bn2 = nn.BatchNorm2d(128)
         self.bn3 = nn.BatchNorm2d(256)
         
-        # Value head (position evaluation)
+        # Value head (position evaluation) only
         self.value_fc1 = nn.Linear(256 * 8 * 8, 256)
         self.value_fc2 = nn.Linear(256, 128)
         self.value_out = nn.Linear(128, 1)
@@ -26,19 +29,19 @@ class SimpleChessNet(nn.Module):
         self.dropout = nn.Dropout(0.3)
     
     def forward(self, x):
-        # x shape: (batch, 13, 8, 8)
-        x = torch.relu(self.bn1(self.conv1(x)))
-        x = torch.relu(self.bn2(self.conv2(x)))
-        x = torch.relu(self.bn3(self.conv3(x)))
+        # Feature extraction
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
         
-        # Value head
+        # Value head only
         value = x.view(x.size(0), -1)  # Flatten
-        value = torch.relu(self.value_fc1(value))
+        value = F.relu(self.value_fc1(value))
         value = self.dropout(value)
-        value = torch.relu(self.value_fc2(value))
-        value = torch.tanh(self.value_out(value))  # Output between -1 and 1
+        value = F.relu(self.value_fc2(value))
+        value = torch.tanh(self.value_out(value))
         
-        return value
+        return value  # <-- Returns single value, not tuple
 
 class PositionEvaluator(nn.Module):
     """
@@ -75,12 +78,11 @@ def test_model():
     # Create dummy input matching your board representation
     dummy_input = torch.randn(4, 13, 8, 8)  # Batch of 4 positions
     
-    value, policy = model(dummy_input)
+    value = model(dummy_input)
     
     print(f"Model: {model.__class__.__name__}")
     print(f"Input shape: {dummy_input.shape}")
-    print(f"Value output shape: {value.shape}")
-    print(f"Policy output shape: {policy.shape}")
+    print(f"Output shape: {value.shape}")
     print(f"Sample evaluation: {value[0].item():.3f}")
     
     return model
