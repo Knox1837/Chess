@@ -104,10 +104,10 @@ def train_ai_screen():
     # Get training parameters
     try:
         num_games = int(input("Number of games to process (100-10000): ") or "1000")
-        epochs = int(input("Training epochs (5-100): ") or "20")
+        epochs = int(input("Training epochs (5-100): ") or "5")
     except:
         num_games = 1000
-        epochs = 20
+        epochs = 5
     
     print(f"\nTraining with {num_games} games for {epochs} epochs...")
     print("This will take some time. Please wait...")

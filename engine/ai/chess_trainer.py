@@ -40,10 +40,7 @@ class ChessDataset(Dataset):
         )
 
 class ChessTrainer:
-    def __init__(self, model_type="simple", device=None):
-        if SimpleChessNet is None:
-            raise ImportError("Neural network models not available")
-        
+    def __init__(self, model_type="simple", device=None, save_checkpoints=False):
         self.device = device or torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu'
         )
@@ -146,8 +143,9 @@ class ChessTrainer:
             dataset, [train_size, val_size]
         )
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        # Store loaders as instance variables
+        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        self.val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
         
         print(f"\nTraining Details:")
         print(f"  Model: {self.model.__class__.__name__}")
@@ -159,6 +157,7 @@ class ChessTrainer:
         print(f"  Device: {self.device}")
         
         best_val_loss = float('inf')
+        best_model_state = None
         
         for epoch in range(num_epochs):
             print(f"\n{'='*60}")
@@ -166,10 +165,10 @@ class ChessTrainer:
             print(f"{'='*60}")
             
             # Train
-            train_loss = self.train_epoch(train_loader)
+            train_loss = self.train_epoch(self.train_loader)
             
             # Validate
-            val_loss = self.validate(val_loader)
+            val_loss = self.validate(self.val_loader)
             
             # Update learning rate
             self.scheduler.step(val_loss)
@@ -183,35 +182,36 @@ class ChessTrainer:
             print(f"Val Loss: {val_loss:.4f}")
             print(f"Learning Rate: {self.optimizer.param_groups[0]['lr']:.6f}")
             
-            # Save best model
+            # Track best model (in memory only)
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                self.save_model("best_model.pth")
-                print(f"  Saved best model (val loss: {val_loss:.4f})")
-            
-            # Save checkpoint every 5 epochs
-            if (epoch + 1) % 5 == 0:
-                self.save_model(f"checkpoint_epoch_{epoch+1}.pth")
+                best_model_state = {
+                    'epoch': epoch + 1,
+                    'model_state_dict': self.model.state_dict().copy(),
+                    'val_loss': val_loss
+                }
+                print(f"  New best model found (val loss: {val_loss:.4f})")
         
-        # Save final model
-        self.save_model("final_model.pth")
+        # Save ONLY final model
+        self.save_model("chess_ai_final.pth")
         self.plot_training_history()
         
         print(f"\nTraining completed!")
-        print(f"Best validation loss: {best_val_loss:.4f}")
+        print(f"Best validation loss: {best_val_loss:.4f} (epoch {best_model_state['epoch'] if best_model_state else num_epochs})")
+        print(f"Final model saved as: chess_ai_final.pth")
     
     def save_model(self, filename):
-        """Save model to file"""
+        """Save model to file - only saves what's needed"""
         model_dir = Path("engine/models/saved")
         model_dir.mkdir(parents=True, exist_ok=True)
         
         save_path = model_dir / filename
+        
+        # Only save essential data
         torch.save({
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'history': self.history,
-            'model_class': self.model.__class__.__name__
+            'model_class': self.model.__class__.__name__,
+            'val_loss': self.history['val_loss'][-1] if self.history['val_loss'] else None
         }, save_path)
         
         print(f"  Model saved to: {save_path}")
