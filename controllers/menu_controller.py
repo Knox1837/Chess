@@ -56,7 +56,10 @@ class MenuController:
                 self.start_stockfish_game()
 
             elif choice == 6:
-                print("\nThanks for playing!")
+                self.estimate_elo()
+            
+            elif choice == 7:
+                print("\n Thanks for playing\n")
                 break
         
         pygame.quit()
@@ -131,3 +134,128 @@ class MenuController:
 
         game.run()
         engine.quit()
+
+    def estimate_elo(self):
+        """Estimate AI Elo by playing against Stockfish at different levels"""
+        import chess.engine
+        from pathlib import Path
+
+        print("\n" + "="*60)
+        print("AI ELO ESTIMATOR")
+        print("="*60)
+
+        stockfish_path = Path("engine/stockfish.exe")
+        if not stockfish_path.exists():
+            print("Stockfish not found at engine/stockfish.exe")
+            print("Please download from https://stockfishchess.org/download/")
+            input("Press Enter to return to menu...")
+            return
+
+        model_path = Path("engine/models/saved/chess_ai_final.pth")
+        if not model_path.exists():
+            print("No trained model found. Please train a model first (Option 4).")
+            input("Press Enter to return to menu...")
+            return
+
+        try:
+            num_games = int(input("Games per Elo level (5-50, recommend 10): ") or "10")
+            num_games = max(5, min(50, num_games))
+        except ValueError:
+            num_games = 20
+
+        from engine.ai.chess_ai import ChessAI
+        import chess
+
+        ai = ChessAI(model_path=str(model_path), skill_level=4)
+        engine = chess.engine.SimpleEngine.popen_uci(str(stockfish_path))
+
+        test_elos = [1320, 1400, 1500, 1600, 1800] #1320 is the min allowed by stockfish used
+        results = {}
+
+        print(f"\nPlaying {num_games} games at each Elo level...")
+        print("This will take a while. Press Ctrl+C to stop early.\n")
+
+        try:
+            for target_elo in test_elos:
+                engine.configure({"UCI_LimitStrength": True, "UCI_Elo": target_elo})
+                wins = draws = losses = 0
+
+                for game_num in range(num_games):
+                    board = chess.Board()
+                    ai_is_white = (game_num % 2 == 0)
+
+                    while not board.is_game_over():
+                        if (board.turn == chess.WHITE) == ai_is_white:
+                            move_result = ai.choose_move(board)
+                            if move_result:
+                                board.push(move_result['move'])
+                            else:
+                                break
+                        else:
+                            sf_result = engine.play(board, chess.engine.Limit(time=0.01))
+                            board.push(sf_result.move)
+
+                    outcome = board.outcome()
+                    if outcome:
+                        if outcome.winner is None:
+                            draws += 1
+                        elif (outcome.winner == chess.WHITE) == ai_is_white:
+                            wins += 1
+                        else:
+                            losses += 1
+
+                total = wins + draws + losses
+                score = (wins + 0.5 * draws) / total if total > 0 else 0
+                results[target_elo] = score
+
+                print(f"vs Stockfish {target_elo}: "
+                    f"{wins}W {draws}D {losses}L  "
+                    f"score={score:.2f}  "
+                    f"{'→ Stronger ↑' if score > 0.6 else '→ Roughly equal ≈' if score > 0.4 else '→ Weaker ↓'}")
+
+                # Stop early if clearly outmatched
+                if score < 0.15:
+                    print(f"  Stopping:- AI is too weak for higher levels")
+                    break
+                if score > 0.85:
+                    print(f"  Clearly stronger — skipping remaining lower levels")
+                    # continue to next level faster
+
+        except KeyboardInterrupt:
+            print("\nStopped early.")
+
+        engine.quit()
+
+        # Estimate Elo from results
+        print("\n" + "="*60)
+        print("RESULT")
+        print("="*60)
+
+        estimated_elo = None
+        for elo, score in sorted(results.items()):
+            if 0.4 <= score <= 0.6:
+                estimated_elo = elo
+                break
+            elif score < 0.4 and estimated_elo is None:
+                # Interpolate between this and previous level
+                elos = sorted(results.keys())
+                idx = elos.index(elo)
+                if idx > 0:
+                    prev_elo = elos[idx - 1]
+                    prev_score = results[prev_elo]
+                    # Linear interpolation
+                    t = (0.5 - score) / (prev_score - score) if prev_score != score else 0.5
+                    estimated_elo = int(elo + t * (prev_elo - elo))
+                break
+
+        if estimated_elo:
+            print(f"Estimated Elo: ~{estimated_elo}")
+        else:
+            scores = list(results.values())
+            elos = list(results.keys())
+            if all(s > 0.6 for s in scores):
+                print(f"Estimated Elo: >{max(elos)} (stronger than all tested levels)")
+            elif all(s < 0.4 for s in scores):
+                print(f"Estimated Elo: <{min(elos)} (weaker than all tested levels)")
+
+        input("\nPress Enter to return to menu...")

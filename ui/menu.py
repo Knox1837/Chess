@@ -12,7 +12,8 @@ def show_menu(win, clock):
         "3. Play vs Basic AI (Heuristic)",
         "4. Train New AI Model",
         "5. Play vs Stockfish",
-        "6. Exit"
+        "6. Estimate Trained AI elo",
+        "7. Exit"
     ]
     
     while True:
@@ -24,10 +25,10 @@ def show_menu(win, clock):
         win.blit(title, (WIDTH//2 - title.get_width()//2, 50))
         
         # Draw menu items
-        font = pygame.font.SysFont(None, 36)
+        font = pygame.font.SysFont(None, 34)
         for i, item in enumerate(menu_items):
             text = font.render(item, True, (200, 200, 200))
-            win.blit(text, (100, 150 + i * 60))
+            win.blit(text, (100, 150 + i * 55))
         
         # Draw instructions
         inst_font = pygame.font.SysFont(None, 24)
@@ -36,13 +37,13 @@ def show_menu(win, clock):
         ]
         for i, inst in enumerate(instructions):
             text = inst_font.render(inst, True, (150, 150, 150))
-            win.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT - 100 + i * 30))
+            win.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT - 40 + i * 30))
         
         pygame.display.flip()
         
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return 6
+                return 7
             
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_1:
@@ -55,8 +56,10 @@ def show_menu(win, clock):
                     return 4
                 elif event.key == pygame.K_5:
                     return 5
-                elif event.key == pygame.K_6 or event.key == pygame.K_ESCAPE:
+                elif event.key == pygame.K_6:
                     return 6
+                elif event.key == pygame.K_7 or event.key == pygame.K_ESCAPE:
+                    return 7
         
         clock.tick(60)
 
