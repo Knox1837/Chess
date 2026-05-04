@@ -11,7 +11,8 @@ def show_menu(win, clock):
         "2. Play vs AI (Trained Model)",
         "3. Play vs Basic AI (Heuristic)",
         "4. Train New AI Model",
-        "5. Exit"
+        "5. Play vs Stockfish",
+        "6. Exit"
     ]
     
     while True:
@@ -41,7 +42,7 @@ def show_menu(win, clock):
         
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return 5
+                return 6
             
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_1:
@@ -52,8 +53,10 @@ def show_menu(win, clock):
                     return 3
                 elif event.key == pygame.K_4:
                     return 4
-                elif event.key == pygame.K_5 or event.key == pygame.K_ESCAPE:
+                elif event.key == pygame.K_5:
                     return 5
+                elif event.key == pygame.K_6 or event.key == pygame.K_ESCAPE:
+                    return 6
         
         clock.tick(60)
 
@@ -103,8 +106,8 @@ def train_ai_screen():
     
     # Get training parameters
     try:
-        num_games = int(input("Number of games to process (100-10000): ") or "1000")
-        epochs = int(input("Training epochs (5-100): ") or "5")
+        num_games = int(input("Number of games to process (100-500000, recommended 5000 for Stockfish): ") or "5000")
+        epochs = int(input("Training epochs (5-100): ") or "25")
     except:
         num_games = 1000
         epochs = 5
@@ -118,7 +121,7 @@ def train_ai_screen():
     
     # Train model
     trainer = ChessTrainer(model_type="simple")
-    trainer.train(num_epochs=epochs, batch_size=32)
+    trainer.train(num_epochs=epochs, batch_size=512)
     
     print("\n✅ Training complete!")
     print("You can now play against your trained AI.")

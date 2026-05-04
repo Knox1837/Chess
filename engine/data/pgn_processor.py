@@ -10,6 +10,7 @@ import pickle
 import sys
 import os
 from pathlib import Path
+import chess.engine
 
 sys.path.append(str(Path(__file__).parent.parent.parent / "game"))
 
@@ -17,7 +18,21 @@ class LichessPGNProcessor:
     def __init__(self):
         self.processed_dir = Path(__file__).parent / "processed"
         self.processed_dir.mkdir(exist_ok=True)
+        
+        # Find stockfish
+        stockfish_path = Path(__file__).parent.parent.parent / "engine" / "stockfish.exe"
+        if not stockfish_path.exists():
+            raise FileNotFoundError(f"Stockfish not found at {stockfish_path}\nPlease download from https://stockfishchess.org/download/")
+        self.engine = chess.engine.SimpleEngine.popen_uci(str(stockfish_path))
+        print(f"Stockfish loaded from {stockfish_path}")
     
+    def __del__(self):
+        if hasattr(self, 'engine'):
+            try:
+                self.engine.quit()
+            except:
+                pass
+
     def board_to_tensor(self, board):
         """
         Convert chess board to 8x8x13 tensor
@@ -72,7 +87,7 @@ class LichessPGNProcessor:
         print(f"Processing PGN file: {pgn_path}")
         
         all_positions = []
-        all_moves = []
+        # all_moves = []
         all_results = []
         game_count = 0
         
@@ -86,6 +101,16 @@ class LichessPGNProcessor:
                 
                 # Get game result
                 result_str = game.headers.get("Result", "")
+                def safe_elo(val): #deal with invalid elo records 
+                    try:
+                        return int(val)
+                    except (ValueError, TypeError):
+                        return 0
+                white_elo = safe_elo(game.headers.get("WhiteElo", "0") or "0")
+                black_elo = safe_elo(game.headers.get("BlackElo", "0") or "0")
+                avg_elo = (white_elo + black_elo) / 2
+                if avg_elo < 1500 or avg_elo > 2500:
+                    continue
                 if result_str == "1-0":
                     result_value = 1.0  # White wins
                 elif result_str == "0-1":
@@ -100,13 +125,22 @@ class LichessPGNProcessor:
                     position_tensor = self.board_to_tensor(board)
                     
                     # Get move label
-                    move_label, move_uci = self.move_to_label(move, board)
+                    #move_label, move_uci = self.move_to_label(move, board)
                     
                     # Determine result from perspective of player to move
-                    current_result = result_value if board.turn == chess.WHITE else -result_value
-                    
+                    try:
+                        # Faster, slightly weaker labels
+                        info = self.engine.analyse(board, chess.engine.Limit(depth=5))
+                        score = info["score"].white().score(mate_score=1000)
+                        # Normalise centipawns to -1..+1 range
+                        # 500 centipawns (~5 pawns) maps to 1.0
+                        current_result = max(-1.0, min(1.0, score / 500.0))
+                    except Exception:
+                        # Fall back to game outcome if Stockfish fails
+                        current_result = result_value if board.turn == chess.WHITE else -result_value
+
                     all_positions.append(position_tensor)
-                    all_moves.append(move_label)
+                    # all_moves.append(move_label)
                     all_results.append(current_result)
                     
                     # Make the move
@@ -115,14 +149,14 @@ class LichessPGNProcessor:
                 game_count += 1
                 pbar.update(1)
                 
-                # Save checkpoint
-                if game_count % save_every == 0:
-                    self.save_checkpoint(all_positions, all_moves, all_results, game_count)
-            
+                # Save checkpoint (uncomment to enable checkpoints)
+                # if game_count % save_every == 0:
+                #     self.save_checkpoint(all_positions, all_moves, all_results, game_count)
+
             pbar.close()
         
         # Final save
-        self.save_data(all_positions, all_moves, all_results, f"full_{game_count}_games")
+        self.save_data(all_positions, all_results, f"full_{game_count}_games")
         print(f"\nProcessed {game_count} games, {len(all_positions)} positions")
     
     def save_checkpoint(self, positions, moves, results, game_count):
@@ -133,7 +167,7 @@ class LichessPGNProcessor:
         self.save_data(positions, moves, results, f"checkpoint_{game_count}")
         print(f"Saved checkpoint after {game_count} games")
     
-    def save_data(self, positions, moves, results, name):
+    def save_data(self, positions, results, name):
         """Save data to numpy files"""
         BASE_DIR = Path(__file__).resolve().parent
         PROCESSED_DIR = BASE_DIR / "processed" / name
@@ -148,8 +182,8 @@ class LichessPGNProcessor:
         np.save(PROCESSED_DIR / "results.npy", results_array)
         
         # Save moves (as pickled list since they have variable length)
-        with open(PROCESSED_DIR / "moves.pkl", "wb") as f:
-            pickle.dump(moves, f)
+        # with open(PROCESSED_DIR / "moves.pkl", "wb") as f:
+        #     pickle.dump(moves, f)
         
         # Save metadata
         metadata = {
@@ -157,8 +191,8 @@ class LichessPGNProcessor:
             'num_games': name,
             'position_shape': positions_array.shape
         }
-        with open(PROCESSED_DIR / "metadata.pkl", "wb") as f:
-            pickle.dump(metadata, f)
+        # with open(PROCESSED_DIR / "metadata.pkl", "wb") as f:
+        #     pickle.dump(metadata, f)
         
         print(f"Saved {len(positions)} positions to {PROCESSED_DIR}")
 

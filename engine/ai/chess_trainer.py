@@ -17,6 +17,9 @@ except ImportError:
     SimpleChessNet = None
     PositionEvaluator = None
 
+torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
+
 class ChessDataset(Dataset):
     """Dataset for chess positions"""
     def __init__(self, data_dir):
@@ -41,9 +44,14 @@ class ChessDataset(Dataset):
 
 class ChessTrainer:
     def __init__(self, model_type="simple", device=None, save_checkpoints=False):
-        self.device = device or torch.device(
-            'cuda' if torch.cuda.is_available() else 'cpu'
-        )
+        if torch.cuda.is_available():
+            best = max(range(torch.cuda.device_count()),
+                    key=lambda i: torch.cuda.get_device_properties(i).total_memory)
+            self.device = torch.device(f'cuda:{best}')
+            print(f"AI using GPU: {torch.cuda.get_device_name(best)}")
+        else:
+            self.device = torch.device('cpu')
+            print("AI using CPU")
         print(f"Using device: {self.device}")
         
         # Initialize model
@@ -54,6 +62,7 @@ class ChessTrainer:
         
         # Loss and optimizer
         self.criterion = nn.MSELoss()
+        self.criterion = nn.SmoothL1Loss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
         
         # Learning rate scheduler
@@ -120,7 +129,7 @@ class ChessTrainer:
 
         return total_loss / len(loader)
     
-    def train(self, num_epochs=20, batch_size=64, data_dir=None):
+    def train(self, num_epochs=20, batch_size=512, data_dir=None):
         """Main training loop"""
         # Load data
         if data_dir is None:
@@ -144,8 +153,8 @@ class ChessTrainer:
         )
         
         # Store loaders as instance variables
-        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        self.val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+        self.val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
         
         print(f"\nTraining Details:")
         print(f"  Model: {self.model.__class__.__name__}")
@@ -265,7 +274,7 @@ class ChessTrainer:
         save_dir.mkdir(parents=True, exist_ok=True)
         
         # Save multiple versions
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         plt.savefig(save_dir / f"training_history_{timestamp}.png", dpi=150, bbox_inches='tight')
         plt.savefig(save_dir / "training_history_latest.png", dpi=150, bbox_inches='tight')
         

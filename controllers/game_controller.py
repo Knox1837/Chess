@@ -16,7 +16,7 @@ class GameController:
         
         # Load appropriate AI
         if use_trained_ai:
-            model_path = "chess_ai_final.pth"
+            model_path = os.path.join("engine", "models", "saved", "chess_ai_final.pth")
             if not os.path.exists(model_path):
                 print("No trained model found. Using basic AI instead.")
                 model_path = None
@@ -25,6 +25,10 @@ class GameController:
         
         # Create game instance
         self.game = ChessGame(ai_model_path=model_path)
+        
+        # Enable AI if requested
+        if use_trained_ai:
+            self.game.ai_enabled = True
         
     def handle_events(self):
         """Process all pygame events"""

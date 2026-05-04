@@ -1,3 +1,10 @@
 __pycache__
+.vscode/
+*.pyc
+*.pyo
 db_count
 test_import.py
+engine/data/processed/
+# just remove the plots but still commit the model
+engine/models/saved/*.png 
+engine/stockfish.exe
