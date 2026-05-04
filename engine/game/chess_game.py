@@ -25,12 +25,16 @@ class ChessGame:
         self.ai_color = chess.BLACK
         self.ai_thinking = False
         
+        self.board_flipped = False  # Track if board is to be flipped
         # Highlight surfaces
         self.highlight_surf = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
         self.highlight_surf.fill((255, 255, 0, 100))
         
         self.valid_move_surf = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
         self.valid_move_surf.fill((0, 255, 0, 100))
+
+        self.last_move_surf = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
+        self.last_move_surf.fill((255, 255, 0, 80))  # yellow, slightly transparent
     
     def handle_click(self, pos):
         """Handle mouse click for piece movement"""
@@ -55,13 +59,21 @@ class ChessGame:
     def draw(self, win):
         """Draw the game"""
         draw_board(win)
-        
+
+        # Draw last move highlight
+        if self.board.move_stack:
+            last_move = self.board.peek()
+            for square in [last_move.from_square, last_move.to_square]:
+                row = 7 - chess.square_rank(square) if not self.board_flipped else chess.square_rank(square)
+                col = chess.square_file(square) if not self.board_flipped else 7 - chess.square_file(square)
+                win.blit(self.last_move_surf, (col * SQUARE_SIZE, row * SQUARE_SIZE))
+
         # Draw highlights
         if self.movement.selected_square is not None:
-            draw_highlights(win, self.movement.selected_square, self.movement.valid_moves, SQUARE_SIZE)
-        
+            draw_highlights(win, self.movement.selected_square, self.movement.valid_moves, SQUARE_SIZE, self.board_flipped)
+
         # Draw pieces
-        draw_pieces(win, self.board, self.piece_images)
+        draw_pieces(win, self.board, self.piece_images, self.board_flipped)
         
         # Draw dragged piece if any
         self.movement.draw_dragged_piece(win, self.piece_images)

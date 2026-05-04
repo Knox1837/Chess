@@ -61,13 +61,13 @@ class ChessTrainer:
             self.model = PositionEvaluator().to(self.device)
         
         # Loss and optimizer
-        self.criterion = nn.MSELoss()
-        self.criterion = nn.SmoothL1Loss()
+        # self.criterion = nn.MSELoss() 
+        self.criterion = nn.SmoothL1Loss() # smoothL1Loss is used as it is less sensitive to outliers than MSE, which can be beneficial for chess position evaluation where some positions may have extreme values.
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
         
         # Learning rate scheduler
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', patience=3, factor=0.5
+            self.optimizer, mode='min', patience=5, factor=0.5
         )
         
         # Training history
@@ -98,7 +98,7 @@ class ChessTrainer:
             loss = self.criterion(preds, results)
 
             self.optimizer.zero_grad()
-            loss.backward()
+            loss.backward() #backward pass 
             self.optimizer.step()
 
             total_loss += loss.item()
@@ -135,7 +135,10 @@ class ChessTrainer:
         if data_dir is None:
             # Find the latest processed data
             processed_dir = Path("engine/data/processed")
-            checkpoints = sorted([d for d in processed_dir.iterdir() if d.is_dir()])
+            checkpoints = sorted(
+                [d for d in processed_dir.iterdir() if d.is_dir()],
+                key=lambda d: d.stat().st_mtime  # sort by modification time, newest last
+            )
             if checkpoints:
                 data_dir = checkpoints[-1]
             else:

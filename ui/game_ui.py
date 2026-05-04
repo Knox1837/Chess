@@ -40,13 +40,12 @@ def draw_board(win):
             color = WHITE if (row + col) % 2 == 0 else BLACK
             pygame.draw.rect(win, color, (col * SQUARE_SIZE, row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE))
 
-def draw_pieces(win, board, piece_images):
-    """Draw chess pieces"""
+def draw_pieces(win, board, piece_images, flipped=False):
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece:
-            row = 7 - chess.square_rank(square)
-            col = chess.square_file(square)
+            row = 7 - chess.square_rank(square) if not flipped else chess.square_rank(square)
+            col = chess.square_file(square) if not flipped else 7 - chess.square_file(square)
             
             symbol = piece.symbol()
             color = 'w' if piece.color == chess.WHITE else 'b'
@@ -66,23 +65,23 @@ def draw_status(win, text):
         text_rect = text_surface.get_rect(center=(WIDTH//2, HEIGHT//2))
         win.blit(text_surface, text_rect)
 
-def draw_highlights(win, selected_square, valid_moves, square_size):
+def draw_highlights(win, selected_square, valid_moves, square_size, flipped=False):
     """Draw square highlights for selected piece and valid moves"""
     if selected_square is not None:
         # Create highlight surfaces
         highlight_surf = pygame.Surface((square_size, square_size), pygame.SRCALPHA)
-        highlight_surf.fill((255, 255, 0, 100))
+        highlight_surf.fill((255, 255, 0, 120))
         
         valid_move_surf = pygame.Surface((square_size, square_size), pygame.SRCALPHA)
         valid_move_surf.fill((0, 255, 0, 100))
         
         # Draw selected square
-        row = 7 - chess.square_rank(selected_square)
-        col = chess.square_file(selected_square)
+        row = 7 - chess.square_rank(selected_square) if not flipped else chess.square_rank(selected_square)
+        col = chess.square_file(selected_square) if not flipped else 7 - chess.square_file(selected_square)
         win.blit(highlight_surf, (col * square_size, row * square_size))
         
-        # Draw valid moves
+        # Draw valid move squares
         for move in valid_moves:
-            row = 7 - chess.square_rank(move.to_square)
-            col = chess.square_file(move.to_square)
+            row = 7 - chess.square_rank(move.to_square) if not flipped else chess.square_rank(move.to_square)
+            col = chess.square_file(move.to_square) if not flipped else 7 - chess.square_file(move.to_square)
             win.blit(valid_move_surf, (col * square_size, row * square_size))

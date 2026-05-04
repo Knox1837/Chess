@@ -55,6 +55,8 @@ class GameController:
             
             elif event.key == pygame.K_s:
                 self.game.ai_color = chess.WHITE if self.game.ai_color == chess.BLACK else chess.BLACK
+                self.game.board_flipped = not self.game.board_flipped
+                self.game.movement.board_flipped = self.game.board_flipped
                 color = "White" if self.game.ai_color == chess.WHITE else "Black"
                 print(f"AI now plays {color}")
             

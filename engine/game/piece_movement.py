@@ -7,11 +7,12 @@ from utils.config import *
 
 class ChessMovement:
     """Handles piece movement and dragging"""
-    def __init__(self, board, square_size, width, height):
+    def __init__(self, board, square_size, width, height, flipped = False):
         self.board = board
         self.square_size = square_size
         self.width = width
         self.height = height
+        self.board_flipped = flipped
         self.selected_square = None
         self.dragged_piece = None
         self.drag_pos = None
@@ -19,12 +20,12 @@ class ChessMovement:
     
     def get_square_from_mouse(self, pos):
         """Convert mouse position to chess square"""
-        x, y = pos
-        col = x // self.square_size
-        row = 7 - (y // self.square_size)
-        
+        col = pos[0] // self.square_size
+        row = pos[1] // self.square_size
         if 0 <= row < 8 and 0 <= col < 8:
-            return chess.square(col, row)
+            if self.board_flipped:
+                return chess.square(7 - col, row)
+            return chess.square(col, 7 - row)
         return None
     
     def handle_mouse_down(self, pos):

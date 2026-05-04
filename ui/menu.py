@@ -117,12 +117,25 @@ def train_ai_screen():
     
     print(f"\nTraining with {num_games} games for {epochs} epochs...")
     print("This will take some time. Please wait...")
-    
-    # Process PGN
-    processor = PGNProcessor()
-    processor.process_pgn_file(pgn_path, max_games=num_games)
-    
-    # Train model
+
+    # Check if processed data already exists
+    from pathlib import Path
+    processed_dir = Path("engine/data/processed")
+    existing = sorted(
+        [d for d in processed_dir.iterdir() if d.is_dir()],
+        key=lambda d: d.stat().st_mtime
+    ) if processed_dir.exists() else []
+
+    if existing:
+        print(f"\nFound existing processed data: {existing[-1].name}")
+        skip = input("Use existing data? (y/n): ").strip().lower()
+        if skip != 'y':
+            processor = PGNProcessor()
+            processor.process_pgn_file(pgn_path, max_games=num_games)
+    else:
+        processor = PGNProcessor()
+        processor.process_pgn_file(pgn_path, max_games=num_games)
+
     trainer = ChessTrainer(model_type="simple")
     trainer.train(num_epochs=epochs, batch_size=512)
     
