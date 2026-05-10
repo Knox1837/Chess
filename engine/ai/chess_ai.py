@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 try:
-    from engine.models.chess_net import SimpleChessNet, PositionEvaluator
+    from engine.models.chess_net import SimpleChessNet, PositionEvaluator, ChessNet
 except ImportError:
     SimpleChessNet = None
     PositionEvaluator = None
@@ -127,7 +127,9 @@ class ChessAI:
             
             # Determine model type
             model_class = checkpoint.get('model_class', 'SimpleChessNet')
-            if model_class == 'SimpleChessNet':
+            if model_class == 'ChessNet':
+                self.model = ChessNet().to(self.device)
+            elif model_class == 'SimpleChessNet':
                 self.model = SimpleChessNet().to(self.device)
             else:
                 self.model = PositionEvaluator().to(self.device)

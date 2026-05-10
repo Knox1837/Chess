@@ -75,7 +75,7 @@ def train_immediately(args):
     trainer = ChessTrainer(model_type="simple")
     trainer.train(num_epochs=args.epochs)
     
-    print("\n✅ Training complete! You can now run: python main.py --play")
+    print("\nTraining complete! You can now run: python main.py --play")
 
 def play_immediately(win, clock):
     """Handle --play command line argument"""

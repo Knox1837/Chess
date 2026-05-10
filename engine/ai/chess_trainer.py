@@ -12,10 +12,12 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 try:
-    from engine.models.chess_net import SimpleChessNet, PositionEvaluator
+    from engine.models.chess_net import SimpleChessNet, PositionEvaluator, ChessNet
+    
 except ImportError:
     SimpleChessNet = None
     PositionEvaluator = None
+    ChessNet = None
 
 torch.backends.cudnn.benchmark = True
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -26,7 +28,7 @@ class ChessDataset(Dataset):
         data_dir = Path(data_dir)
         
         # Load positions and results
-        self.positions = np.load(data_dir / "positions.npy")
+        self.positions = np.load(data_dir / "positions.npy") # .npy numpy array format that is much faster for r/w in comparison to csv, json and other text based formats
         self.results = np.load(data_dir / "results.npy")
         
         print(f"Loaded dataset from {data_dir}")
@@ -56,7 +58,7 @@ class ChessTrainer:
         
         # Initialize model
         if model_type == "simple":
-            self.model = SimpleChessNet().to(self.device)
+            self.model = ChessNet().to(self.device)
         else:
             self.model = PositionEvaluator().to(self.device)
         
