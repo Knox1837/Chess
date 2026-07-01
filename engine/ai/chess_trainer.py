@@ -10,6 +10,7 @@ from datetime import datetime
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from pathlib import Path
+import shutil
 
 try:
     from engine.models.chess_net import SimpleChessNet, PositionEvaluator, ChessNet
@@ -196,7 +197,7 @@ class ChessTrainer:
             print(f"Val Loss: {val_loss:.4f}")
             print(f"Learning Rate: {self.optimizer.param_groups[0]['lr']:.6f}")
             
-            # Track best model (in memory only)
+            # Track best model and checkpoint to disk immediately
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_model_state = {
@@ -205,14 +206,34 @@ class ChessTrainer:
                     'val_loss': val_loss
                 }
                 print(f"  New best model found (val loss: {val_loss:.4f})")
+                self._save_checkpoint_rotating(best_model_state)
         
-        # Save ONLY final model
-        self.save_model("chess_ai_final.pth")
         self.plot_training_history()
         
         print(f"\nTraining completed!")
         print(f"Best validation loss: {best_val_loss:.4f} (epoch {best_model_state['epoch'] if best_model_state else num_epochs})")
-        print(f"Final model saved as: chess_ai_final.pth")
+        print(f"Best model saved as: chess_ai_final.pth")
+    
+    def _save_checkpoint_rotating(self, best_model_state):
+        """Save the new best model to disk immediately, rotating the old best to 'previous_best'.
+        This guards against losing progress if training is interrupted mid-run."""
+        model_dir = Path("engine/models/saved")
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        final_path = model_dir / "chess_ai_final.pth"
+        previous_best_path = model_dir / "chess_ai_previous_best.pth"
+
+        # Rotate: current "final" (the prior best) becomes "previous_best"
+        if final_path.exists():
+            shutil.copy2(final_path, previous_best_path)
+
+        # Save new best as "final"
+        torch.save({
+            'model_state_dict': best_model_state['model_state_dict'],
+            'model_class': self.model.__class__.__name__,
+            'val_loss': best_model_state['val_loss'],
+            'epoch': best_model_state['epoch']
+        }, final_path)
     
     def save_model(self, filename):
         """Save model to file - only saves what's needed"""

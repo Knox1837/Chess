@@ -24,6 +24,7 @@ class LichessPGNProcessor:
         if not stockfish_path.exists():
             raise FileNotFoundError(f"Stockfish not found at {stockfish_path}\nPlease download from https://stockfishchess.org/download/")
         self.engine = chess.engine.SimpleEngine.popen_uci(str(stockfish_path))
+        self.engine.configure({"Threads": 4, "Hash": 512})
         print(f"Stockfish loaded from {stockfish_path}")
     
     def __del__(self):
@@ -129,19 +130,19 @@ class LichessPGNProcessor:
                     
                     # Determine result from perspective of player to move
                     try:
-                        # Faster, slightly weaker labels
-                        info = self.engine.analyse(board, chess.engine.Limit(depth=5))
-                        score = info["score"].white().score(mate_score=1000)
-                        # Normalise centipawns to -1..+1 range
-                        # 500 centipawns (~5 pawns) maps to 1.0
+                        is_endgame = len(board.piece_map()) <= 10
+                        info = self.engine.analyse(board, chess.engine.Limit(depth=12 if is_endgame else 5))
+                        score = info["score"].white().score(mate_score=10000)
                         current_result = max(-1.0, min(1.0, score / 500.0))
                     except Exception:
-                        # Fall back to game outcome if Stockfish fails
+                        is_endgame = len(board.piece_map()) <= 10
                         current_result = result_value if board.turn == chess.WHITE else -result_value
 
-                    all_positions.append(position_tensor)
-                    # all_moves.append(move_label)
-                    all_results.append(current_result)
+                    # Oversample endgame positions 3x to balance dataset
+                    repeat = 3 if is_endgame else 1
+                    for _ in range(repeat):
+                        all_positions.append(position_tensor)
+                        all_results.append(current_result)
                     
                     # Make the move
                     board.push(move)

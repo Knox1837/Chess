@@ -132,13 +132,15 @@ def train_ai_screen():
         if skip != 'y':
             processor = PGNProcessor()
             processor.process_pgn_file(pgn_path, max_games=num_games)
+        else:
+            print(f"Skipping preprocessing — using {existing[-1].name}")
     else:
         processor = PGNProcessor()
         processor.process_pgn_file(pgn_path, max_games=num_games)
 
     trainer = ChessTrainer(model_type="simple")
-    trainer.train(num_epochs=epochs, batch_size=512)
+    trainer.train(num_epochs=epochs, batch_size=2048)
     
-    print("\n✅ Training complete!")
+    print("\nTraining complete!")
     print("You can now play against your trained AI.")
     input("Press Enter to return to menu...")

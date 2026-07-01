@@ -5,6 +5,6 @@ __pycache__
 db_count
 test_import.py
 engine/data/processed/
-# just remove the plots but still commit the model
+engine/models/saved/chess_ai_previous_best.pth
 engine/models/saved/*.png 
 engine/stockfish.exe

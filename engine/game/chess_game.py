@@ -3,6 +3,7 @@ Main chess game logic
 """
 import chess
 import pygame
+import threading
 from engine.game.piece_movement import ChessMovement
 from engine.ai.chess_ai import ChessAI
 from ui.game_ui import load_piece_images, draw_board, draw_pieces, draw_status, draw_highlights
@@ -24,6 +25,7 @@ class ChessGame:
         self.ai_enabled = False
         self.ai_color = chess.BLACK
         self.ai_thinking = False
+        self.ai_move_result = None   # Result posted here by background thread
         
         self.board_flipped = False  # Track if board is to be flipped
         # Highlight surfaces
@@ -101,24 +103,31 @@ class ChessGame:
         self.valid_moves = self.movement.valid_moves
         
         # AI move if enabled
-        if (self.ai_enabled and not self.board.is_game_over() and 
-            self.board.turn == self.ai_color and not self.ai_thinking):
-            
-            self.ai_thinking = True
-            
-            # Get AI move
-            move_result = self.ai.choose_move(self.board)
-            
-            if move_result:
-                self.board.push(move_result['move'])
-                print(f"AI plays: {move_result['move_san']} (eval: {move_result['eval']:.2f})")
-            
-            self.ai_thinking = False
-            
-            # Clear selection
-            self.movement.selected_square = None
-            self.movement.valid_moves = []
-            
-            return True
+        if (self.ai_enabled and not self.board.is_game_over() and
+            self.board.turn == self.ai_color):
+
+            # If a background search just finished, apply the result
+            if self.ai_move_result is not None:
+                move_result = self.ai_move_result
+                self.ai_move_result = None
+                self.ai_thinking = False
+                if move_result:
+                    self.board.push(move_result['move'])
+                    eval_str = move_result.get('eval_display') or f"{move_result['eval']:.2f}"
+                    print(f"AI plays: {move_result['move_san']} (eval: {eval_str})")
+                self.movement.selected_square = None
+                self.movement.valid_moves = []
+                return True
+
+            # Start a background thread for the search if not already thinking
+            if not self.ai_thinking:
+                self.ai_thinking = True
+                board_copy = self.board.copy()  # Thread gets its own copy — never touch self.board from thread
+
+                def _think():
+                    result = self.ai.choose_move(board_copy)
+                    self.ai_move_result = result  # Post result; main thread applies it next frame
+
+                threading.Thread(target=_think, daemon=True).start()
         
         return False
