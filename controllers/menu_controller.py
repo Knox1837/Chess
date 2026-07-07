@@ -6,6 +6,41 @@ import sys
 import os
 from pathlib import Path
 
+
+def _play_one_elo_game(args):
+    """Worker plays a single game (AI vs Stockfish at a fixed Elo)"""
+    model_path, skill_level, stockfish_path, target_elo, ai_is_white, sf_time = args
+    import chess
+    import chess.engine
+    from engine.ai.chess_ai import ChessAI
+
+    ai = ChessAI(model_path=model_path, skill_level=skill_level)
+    engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+    engine.configure({"UCI_LimitStrength": True, "UCI_Elo": target_elo})
+
+    try:
+        board = chess.Board()
+        while not board.is_game_over():
+            if (board.turn == chess.WHITE) == ai_is_white:
+                move_result = ai.choose_move(board)
+                if move_result:
+                    board.push(move_result['move'])
+                else:
+                    break
+            else:
+                sf_result = engine.play(board, chess.engine.Limit(time=sf_time))
+                board.push(sf_result.move)
+
+        outcome = board.outcome()
+        if outcome is None:
+            return 'incomplete'
+        if outcome.winner is None:
+            return 'draw'
+        return 'win' if (outcome.winner == chess.WHITE) == ai_is_white else 'loss'
+    finally:
+        engine.quit()
+
+
 class MenuController:
     """Controls menu navigation and training"""
     
@@ -163,46 +198,37 @@ class MenuController:
         except ValueError:
             num_games = 20
 
-        from engine.ai.chess_ai import ChessAI
-        import chess
+        try:
+            num_workers = int(input(f"Parallel workers (1-{os.cpu_count()}, recommend {max(1, os.cpu_count() - 1)}): ") or str(max(1, os.cpu_count() - 1)))
+            num_workers = max(1, min(os.cpu_count(), num_workers))
+        except ValueError:
+            num_workers = max(1, os.cpu_count() - 1)
 
-        ai = ChessAI(model_path=str(model_path), skill_level=4)
-        engine = chess.engine.SimpleEngine.popen_uci(str(stockfish_path))
+        import concurrent.futures
 
-        test_elos = [1320, 1400, 1500, 1600, 1800] #1320 is the min allowed by stockfish used
+        test_elos = [1320, 1400, 1500, 1600, 1800]  # 1320 is the min allowed by stockfish used
         results = {}
 
-        print(f"\nPlaying {num_games} games at each Elo level...")
-        print("This will take a while. Press Ctrl+C to stop early.\n")
+        print(f"\nPlaying {num_games} games at each Elo level, {num_workers} in parallel...")
+        print("Press Ctrl+C to stop early.\n")
 
         try:
             for target_elo in test_elos:
-                engine.configure({"UCI_LimitStrength": True, "UCI_Elo": target_elo})
+                jobs = [
+                    (str(model_path), 4, str(stockfish_path), target_elo, game_num % 2 == 0, 0.1)
+                    for game_num in range(num_games)
+                ]
+
                 wins = draws = losses = 0
-
-                for game_num in range(num_games):
-                    board = chess.Board()
-                    ai_is_white = (game_num % 2 == 0)
-
-                    while not board.is_game_over():
-                        if (board.turn == chess.WHITE) == ai_is_white:
-                            move_result = ai.choose_move(board)
-                            if move_result:
-                                board.push(move_result['move'])
-                            else:
-                                break
-                        else:
-                            sf_result = engine.play(board, chess.engine.Limit(time=0.01))
-                            board.push(sf_result.move)
-
-                    outcome = board.outcome()
-                    if outcome:
-                        if outcome.winner is None:
-                            draws += 1
-                        elif (outcome.winner == chess.WHITE) == ai_is_white:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as pool:
+                    for outcome in pool.map(_play_one_elo_game, jobs):
+                        if outcome == 'win':
                             wins += 1
-                        else:
+                        elif outcome == 'draw':
+                            draws += 1
+                        elif outcome == 'loss':
                             losses += 1
+                        # 'incomplete' games (no legal move returned) are dropped
 
                 total = wins + draws + losses
                 score = (wins + 0.5 * draws) / total if total > 0 else 0
@@ -218,38 +244,41 @@ class MenuController:
                     print(f"  Stopping:- AI is too weak for higher levels")
                     break
                 if score > 0.85:
-                    print(f"  Clearly stronger — skipping remaining lower levels")
-                    # continue to next level faster
+                    print(f"  Clearly stronger at this level")
 
         except KeyboardInterrupt:
             print("\nStopped early.")
-
-        engine.quit()
 
         # Estimate Elo from results
         print("\n" + "="*60)
         print("RESULT")
         print("="*60)
 
-        estimated_elo = None
-        for elo, score in sorted(results.items()):
-            if 0.4 <= score <= 0.6:
-                estimated_elo = elo
-                break
-            elif score < 0.4 and estimated_elo is None:
-                # Interpolate between this and previous level
-                elos = sorted(results.keys())
-                idx = elos.index(elo)
-                if idx > 0:
-                    prev_elo = elos[idx - 1]
-                    prev_score = results[prev_elo]
-                    # Linear interpolation
-                    t = (0.5 - score) / (prev_score - score) if prev_score != score else 0.5
-                    estimated_elo = int(elo + t * (prev_elo - elo))
-                break
+        import math
 
-        if estimated_elo:
-            print(f"Estimated Elo: ~{estimated_elo}")
+        implied_elos = []
+        for target_elo, score in sorted(results.items()):
+            games_played = num_games  # same fixed count per level in this loop
+            if 0.0 < score < 1.0:
+                diff = 400 * math.log10(score / (1 - score))
+                implied_elos.append((target_elo + diff, games_played))
+
+        if implied_elos:
+            total_weight = sum(w for _, w in implied_elos)
+            estimated_elo = int(sum(e * w for e, w in implied_elos) / total_weight)
+
+            elo_variances = []
+            for target_elo, score in sorted(results.items()):
+                if 0.0 < score < 1.0:
+                    se = math.sqrt(score * (1 - score) / max(1, num_games))
+                    # local derivative of 400*log10(s/(1-s)) w.r.t. s
+                    slope = 400 / math.log(10) * (1 / score + 1 / (1 - score))
+                    elo_variances.append((slope * se) ** 2)
+            if elo_variances:
+                combined_se = math.sqrt(sum(elo_variances)) / len(elo_variances)
+                print(f"Estimated Elo: ~{estimated_elo} (95% CI: ±{int(1.96 * combined_se)})")
+            else:
+                print(f"Estimated Elo: ~{estimated_elo}")
         else:
             scores = list(results.values())
             elos = list(results.keys())

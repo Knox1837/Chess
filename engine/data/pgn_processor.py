@@ -3,6 +3,7 @@ Process Lichess PGN files for ML training
 """
 import chess
 import chess.pgn
+import chess.polyglot
 import numpy as np
 import pandas as pd
 from tqdm import tqdm # smart progress bar
@@ -91,6 +92,10 @@ class LichessPGNProcessor:
         # all_moves = []
         all_results = []
         game_count = 0
+
+        # Cap how many times any single (near-)duplicate position can appear in the final dataset
+        position_counts = {}
+        MAX_COPIES_PER_POSITION = 3  # hard cap regardless of oversampling multiplier
         
         with open(pgn_path, 'r') as f:
             pbar = tqdm(total=max_games, desc="Processing games")
@@ -138,11 +143,16 @@ class LichessPGNProcessor:
                         is_endgame = len(board.piece_map()) <= 10
                         current_result = result_value if board.turn == chess.WHITE else -result_value
 
-                    # Oversample endgame positions 3x to balance dataset
-                    repeat = 3 if is_endgame else 1
+                    # Oversample endgame positions, but with cap of recurring positions so there is variety instead of  repeating the same positions
+                    pos_key = chess.polyglot.zobrist_hash(board)
+                    already_kept = position_counts.get(pos_key, 0)
+                    desired_repeat = 3 if is_endgame else 1
+                    repeat = max(0, min(desired_repeat, MAX_COPIES_PER_POSITION - already_kept))
+
                     for _ in range(repeat):
                         all_positions.append(position_tensor)
                         all_results.append(current_result)
+                    position_counts[pos_key] = already_kept + repeat
                     
                     # Make the move
                     board.push(move)

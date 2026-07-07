@@ -180,6 +180,11 @@ class ChessAI:
         if self.model is None:
             return 0.0
 
+        if board.is_checkmate():
+            return -10000 if board.turn == chess.WHITE else 10000
+        if board.is_stalemate() or board.is_insufficient_material():
+            return 0
+
         tensor = self.board_to_tensor(board)
         # Reuse pre-allocated buffer to avoid repeated GPU memory allocation per call
         if not hasattr(self, '_input_buffer'):
@@ -303,7 +308,7 @@ class ChessAI:
     
     def evaluate_position(self, board):
         """Always returns score from White's perspective (positive = White is better)."""
-        if self.model and self.skill_level >= 4:
+        if self.model and self.skill_level >= 4 and not self._is_endgame(board) and len(board.piece_map()) > 14:
             return self.evaluate_position_nn(board)
         else:
             return self.evaluate_position_heuristic(board)
