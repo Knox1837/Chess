@@ -8,3 +8,6 @@ engine/data/processed/
 engine/models/saved/chess_ai_previous_best.pth
 engine/models/saved/*.png 
 engine/stockfish.exe
+build/
+engine/bin/
+engine/data/raw/
