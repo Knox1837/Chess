@@ -14,17 +14,8 @@ class GameController:
         self.win = win
         self.clock = clock
         
-        # Load appropriate AI
-        if use_trained_ai:
-            model_path = os.path.join("engine", "models", "saved", "chess_ai_final.pth")
-            if not os.path.exists(model_path):
-                print("No trained model found. Using basic AI instead.")
-                model_path = None
-        else:
-            model_path = None
-        
-        # Create game instance
-        self.game = ChessGame(ai_model_path=model_path)
+        # use_trained_ai now just selects the strong AI setting (skill level 4)
+        self.game = ChessGame(strong_ai=use_trained_ai)
         
         # Enable AI if requested
         if use_trained_ai:

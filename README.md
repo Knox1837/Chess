@@ -5,6 +5,8 @@ neural-network evaluator trained on Lichess data, and tools to measure how stron
 
 - **Play** against the AI, against a friend, or against Stockfish.
 - **C++ engine** (`engine/cpp/`): about 5 million nodes/sec, searches 10+ plies in well under a second.
+- **Strength:** roughly **2500-2600** against Stockfish limited to a given Elo, at 0.1 s per move
+  (benchmark games against Stockfish, see [Strength](#strength)).
 - **Pure-Python fallback**: if the C++ engine has not been built, the game still works (just weaker and slower).
 - **NNUE-style network** (`train_nnue.py`): trained from the Lichess evaluation database; optional.
 - **Evaluation tools**: `evaluate_engine.py` (vs Stockfish) and `train_nnue.py match` (network vs hand-written eval).
@@ -62,8 +64,7 @@ Speed check (the last line shows nodes per second; a Release build reaches milli
 | 6 | Estimate the AI's Elo (plays in parallel; `evaluate_engine.py` is more reliable) |
 | 7 | Exit |
 
-Option 2 still checks that `engine/models/saved/chess_ai_final.pth` exists before it picks the strong
-setting. The AI no longer thinks with that file, but keep it in place.
+Options 2 and 3 only differ in skill level; neither needs a model file.
 
 ## Controls
 
@@ -89,8 +90,11 @@ setting. The AI no longer thinks with that file, but keep it in place.
 | 5 | full strength, about 2.5 s per move |
 
 Levels 1-3 score every move and add random noise, so they make human-like mistakes instead of random
-ones. Only level 4 has been measured (below); the others are not calibrated to an Elo. In the first
-three moves of a game the engine picks slightly noisy moves so games do not repeat.
+ones. Only level 4 has been benchmarked (see Strength); the others are not calibrated to an Elo. In the
+first three moves of a game the engine picks slightly noisy moves so games do not repeat.
+
+The evaluation printed in the terminal during a game (e.g. `AI plays: Nf3 (eval: +0.35)`) is the
+engine's own score in pawns from White's point of view (`#3` = forced mate). It is not a Stockfish evaluation.
 
 ## How the engine works
 
@@ -102,30 +106,48 @@ three moves of a game the engine picks slightly noisy moves so games do not repe
 - **Board and move generation:** the third-party `chess.hpp` library (see Credits). The engine speaks
   UCI, and `engine/ai/chess_ai.py` talks to it through `python-chess`.
 
-## Measuring strength
+## Strength
+
+**Current estimate: roughly 2500-2600 against Stockfish limited to a given Elo**, with the engine at
+skill level 4 and both sides playing 0.1 s per move. This comes from benchmark games against Stockfish
+(`evaluate_engine.py`), not from a rating list or games against people, so use it to compare versions
+of this engine rather than as an official rating.
+
+Benchmark results (colours alternate from random 4-ply openings; Stockfish uses `UCI_LimitStrength`
+with the Elo shown):
+
+| Stockfish Elo setting | Games | W / D / L | Score | Performance estimate |
+|---|---|---|---|---|
+| 1800 | 10 | 10 / 0 / 0 | 100% | at least ~2310 (a clean sweep only gives a bound) |
+| 2200 | 10 | 9 / 0 / 1 | 90% | ~2580 |
+| 2600 | 60 (10 + 50) | 21 / 13 / 26 | 46% | ~2570 (the 50-game run alone: 15 / 12 / 23, 42%, ~2544) |
+| 2800 | 30 | 1 / 7 / 22 | 15% | ~2500 |
+
+Performance = Stockfish's Elo setting + 400 * log10(score / (1 - score)). The levels where the result was
+not a clean sweep agree to within about 100 Elo, which is how the 2500-2600 range was chosen.
+
+For comparison, the earlier pure-Python engine held draws against the 1900 setting in a small early test
+(about 6 games, longer thinking time), so the C++ engine is a large step up.
+
+How to read it:
+
+- Stockfish's Elo limiter is calibrated for long time controls; at 0.1 s per move Stockfish plays below its
+  label, which flatters the engine's number somewhat. It is not comparable to FIDE or Lichess ratings.
+- With 10-60 games per level the margin is roughly +/-100 Elo. Differences of a few dozen points between
+  two versions are noise; changes of a few hundred points are real.
+- The engine searches by time, so results depend on the CPU it runs on.
+
+Reproduce it (needs `engine/stockfish.exe`, or pass `--stockfish PATH`):
 
 ```powershell
-python evaluate_engine.py --movetime 0.1 --games 10
-python evaluate_engine.py --movetime 0.1 --games 20 --elos 2400 2600 2800
+python evaluate_engine.py --movetime 0.1 --games 20
+python evaluate_engine.py --movetime 0.1 --games 50 --elos 2400 2600 2800
 ```
 
-It plays your AI against Stockfish limited to the given Elo levels (needs `engine/stockfish.exe`, or pass
-`--stockfish PATH`), alternating colours from random openings, one game at a time, and prints
-win/draw/loss counts, an estimated performance Elo and the total time taken. Other flags: `--level`,
-`--elos`, `--sf-time`, `--nnue`.
-
-Example run (level 4, 0.1 s per move on both sides):
-
-| Stockfish setting | Result | Score |
-|---|---|---|
-| 1800 | 10W 0D 0L | 100% |
-| 2200 | 9W 0D 1L | 90% |
-| 2600 | 6W 1D 3L | 65% |
-| 2800 | 1W 7D 22L | 15% |
-
-That puts the engine somewhere around 2500-2650 under these conditions. Treat it as a way to compare
-versions of the engine, not an official rating: Stockfish's Elo limiter is calibrated for long time
-controls, and these samples are small. A 100% or 0% score only gives a bound.
+The script plays the AI against Stockfish one game at a time (no parallel workers, so the time-limited
+search is not starved of CPU) and prints win/draw/loss counts, a performance estimate per level, and the
+total time taken. Other flags: `--level`, `--sf-time`, `--nnue`, `--max-plies`. Pick Elo levels close to
+the engine's strength, because a 100% or 0% score only gives a bound.
 
 ## Training the neural network
 
@@ -162,15 +184,16 @@ pip install zstandard torch
 **Current status:** the network is a more accurate evaluator than the hand-written one on held-out
 positions (loss about 0.0062 vs 0.0135, typical error 92 cp vs 144 cp), but it is much slower per node in
 the C++ engine, so the hand-written evaluation plays stronger at equal thinking time. The network is
-therefore **off by default**. To try it, create the AI with `ChessAI(skill_level=4, use_nnue=True)`; the
-C++ engine reads a `nnue.bin` that is generated next to `nnue.npz` on first use. Making it competitive
-needs a smaller hidden size or incremental updates inside the C++ engine.
+therefore **off by default**, and the strength figures above are for the hand-written evaluation. To try
+the network, create the AI with `ChessAI(skill_level=4, use_nnue=True)`; the C++ engine reads a `nnue.bin`
+that is generated next to `nnue.npz` on first use. Making it competitive needs a smaller hidden size or
+incremental updates inside the C++ engine.
 
 ## Legacy training (menu option 4)
 
-Menu option 4 trains the original convolutional network from PGN games
+Menu option 4 trains the original convolutional network from PGN games placed in `engine/data/raw/`
 (`engine/data/pgn_processor.py`, `engine/ai/chess_trainer.py`, `engine/models/chess_net.py`). The AI no
-longer uses that network, so use `train_nnue.py` instead. These files are kept so the menu still starts.
+longer uses that network, so use `train_nnue.py` instead. These files are kept only so the menu still starts.
 
 ## Project layout
 
@@ -205,7 +228,8 @@ Chess/
 ## Credits and licenses
 
 - **[chess-library](https://github.com/Disservin/chess-library)** by Disservin (MIT) - board, move
-  generation and draw detection, used unmodified as `engine/cpp/chess.hpp`.
+  generation and draw detection, used unmodified as `engine/cpp/chess.hpp`. Its license notice must stay
+  at the top of that file.
 - **PeSTO evaluation tables** by Ronald Friederich - the piece-square tables used by the hand-written eval.
 - **[Lichess evaluation database](https://database.lichess.org/)** (CC0) - training data for the network.
 - **[python-chess](https://python-chess.readthedocs.io/)** - used by the Python side for boards and the UCI link.

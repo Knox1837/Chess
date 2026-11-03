@@ -11,7 +11,7 @@ from utils.config import *
 
 class ChessGame:
     """Main chess game logic"""
-    def __init__(self, ai_model_path=None):
+    def __init__(self, strong_ai=False):
         self.board = chess.Board()
         self.selected_square = None
         self.valid_moves = []
@@ -21,7 +21,7 @@ class ChessGame:
         self.movement = ChessMovement(self.board, SQUARE_SIZE, WIDTH, HEIGHT)
         
         # AI setup
-        self.ai = ChessAI(model_path=ai_model_path, skill_level=4 if ai_model_path else 2)
+        self.ai = ChessAI(skill_level=4 if strong_ai else 2)
         self.ai_enabled = False
         self.ai_color = chess.BLACK
         self.ai_thinking = False

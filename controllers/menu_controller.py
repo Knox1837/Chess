@@ -109,13 +109,7 @@ class MenuController:
         """Quick start for immediate play"""
         print("Quick Start: Loading chess game...")
         
-        # Try to load trained model
-        model_path = os.path.join("engine", "models", "saved", "chess_ai_final.pth")
-        if not os.path.exists(model_path):
-            print("No trained AI found. Using basic AI.")
-            model_path = None
-        
-        game = self.GameController(self.win, self.clock, model_path is not None)
+        game = self.GameController(self.win, self.clock, True)
         game.game.ai_enabled = True
         
         print("\nGame Started!")
@@ -186,12 +180,6 @@ class MenuController:
             input("Press Enter to return to menu...")
             return
 
-        model_path = Path("engine/models/saved/chess_ai_final.pth")
-        if not model_path.exists():
-            print("No trained model found. Please train a model first (Option 4).")
-            input("Press Enter to return to menu...")
-            return
-
         try:
             num_games = int(input("Games per Elo level (5-50, recommend 10): ") or "10")
             num_games = max(5, min(50, num_games))
@@ -215,7 +203,7 @@ class MenuController:
         try:
             for target_elo in test_elos:
                 jobs = [
-                    (str(model_path), 4, str(stockfish_path), target_elo, game_num % 2 == 0, 0.1)
+                    (None, 4, str(stockfish_path), target_elo, game_num % 2 == 0, 0.1)
                     for game_num in range(num_games)
                 ]
 
