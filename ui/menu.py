@@ -8,13 +8,22 @@ def show_menu(win, clock):
     """Show main menu"""
     menu_items = [
         "1. Play Chess (Human vs Human)",
-        "2. Play vs AI (Trained Model)",
-        "3. Play vs Basic AI (Heuristic)",
-        "4. Train New AI Model",
-        "5. Play vs Stockfish",
-        "6. Estimate Trained AI elo",
-        "7. Exit"
+        "2. Play vs AI",
+        "3. Train New AI Model (legacy)",
+        "4. Play vs Stockfish",
+        "5. Estimate AI Elo",
+        "6. Exit"
     ]
+    # Key -> value returned to MenuController.run(). The returned numbers are the ones the controller already dispatches on (3, the heuristic AI option, is simply no longer used).
+    key_to_choice = {
+        pygame.K_1: 1,
+        pygame.K_2: 2,
+        pygame.K_3: 4,
+        pygame.K_4: 5,
+        pygame.K_5: 6,
+        pygame.K_6: 7,
+        pygame.K_ESCAPE: 7,
+    }
     
     while True:
         win.fill((50, 50, 50))
@@ -45,21 +54,8 @@ def show_menu(win, clock):
             if event.type == pygame.QUIT:
                 return 7
             
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_1:
-                    return 1
-                elif event.key == pygame.K_2:
-                    return 2
-                elif event.key == pygame.K_3:
-                    return 3
-                elif event.key == pygame.K_4:
-                    return 4
-                elif event.key == pygame.K_5:
-                    return 5
-                elif event.key == pygame.K_6:
-                    return 6
-                elif event.key == pygame.K_7 or event.key == pygame.K_ESCAPE:
-                    return 7
+            if event.type == pygame.KEYDOWN and event.key in key_to_choice:
+                return key_to_choice[event.key]
         
         clock.tick(60)
 

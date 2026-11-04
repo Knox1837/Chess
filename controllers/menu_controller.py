@@ -60,11 +60,9 @@ class MenuController:
         print("CHESS AI TRAINER & PLAYER")
         print("="*60)
         print("\nInstructions:")
-        print("1. Place PGN files in: engine/data/raw/")
-        print("2. Train AI first (Option 4)")
-        print("3. Play against trained AI (Option 2)")
-        print("4. Play vs Stockfish (Option 5)")
-        print("5. Exit (Option 6 or ESC)")
+        print("1. Play against the AI (Option 2)")
+        print("2. Play vs Stockfish (Option 4)")
+        print("3. Exit (Option 6 or ESC)")
         print("="*60)
         
         while True:
@@ -77,12 +75,6 @@ class MenuController:
             elif choice == 2:
                 print("\nStarting game vs Trained AI...")
                 self.start_game(use_trained_ai=True)
-            
-            elif choice == 3:
-                print("\nStarting game vs Basic AI...")
-                game = self.GameController(self.win, self.clock, use_trained_ai=False)
-                game.game.ai_enabled = True
-                game.run()
             
             elif choice == 4:
                 self.train_ai_screen()

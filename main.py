@@ -16,11 +16,55 @@ from utils.config import *
 from controllers.menu_controller import MenuController
 from controllers.game_controller import GameController
 
+def install_fullscreen_hotkey():
+    """Make F11 toggle fullscreen from any screen (menu or game)."""
+    original_get = pygame.event.get
+
+    def get(*args, **kwargs):
+        events = original_get(*args, **kwargs)
+        for event in events:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                try:
+                    pygame.display.toggle_fullscreen()
+                except pygame.error as e:
+                    print(f"Could not toggle fullscreen: {e}")
+        return events
+
+    pygame.event.get = get
+
+
+def maximize_window():
+    """Maximize the game window (best effort; returns True on success)."""
+    try:
+        from pygame._sdl2.video import Window
+        Window.from_display_module().maximize()
+        return True
+    except Exception:
+        pass
+    if sys.platform == "win32":                      # fallback: plain Win32 call
+        try:
+            import ctypes
+            hwnd = pygame.display.get_wm_info()["window"]
+            ctypes.windll.user32.ShowWindow(hwnd, 3)  # 3 = SW_MAXIMIZE
+            return True
+        except Exception:
+            pass
+    return False
+
+
 def main():
     """Main program entry point"""
+    # Smooth (instead of blocky) scaling when the window is enlarged
+    os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")
+
     # Setup pygame
     pygame.init()
-    WIN = pygame.display.set_mode((WIDTH, HEIGHT))
+    # RESIZABLE lets you maximize / drag-resize the window; SCALED keeps the 600x600 game surface and stretches it to the window (mouse positions are converted automatically, so no layout changes).
+    flags = pygame.RESIZABLE | getattr(pygame, "SCALED", 0)
+    WIN = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+    if not WIN.get_flags() & getattr(pygame, "SCALED", 0):
+        print("Note: scaled window mode is not available here, so a maximized window will not stretch the board.")
+    install_fullscreen_hotkey()
     pygame.display.set_caption("Chess AI Trainer & Player")
     CLOCK = pygame.time.Clock()
     
@@ -31,8 +75,12 @@ def main():
     parser.add_argument('--pgn', type=str, help='PGN file to process')
     parser.add_argument('--games', type=int, default=1000, help='Number of games to process')
     parser.add_argument('--epochs', type=int, default=20, help='Training epochs')
+    parser.add_argument('--windowed', action='store_true', help='Start in a normal window instead of maximized')
     
     args = parser.parse_args()
+
+    if not args.windowed and not maximize_window():
+        print("Note: could not maximize the window automatically; use the maximize button or F11.")
     
     if args.train:
         # Train immediately

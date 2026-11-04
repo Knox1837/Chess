@@ -76,6 +76,7 @@ Options 2 and 3 only differ in skill level; neither needs a model file.
 | R | Reset board |
 | Z | Undo move |
 | ESC | Return to menu |
+| F11 | Toggle fullscreen (the window can also be maximized or resized; the board scales to fit) |
 
 ## Skill levels
 
