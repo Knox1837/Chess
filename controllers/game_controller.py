@@ -7,15 +7,14 @@ import os
 
 class GameController:
     """Controls the chess game loop and user input"""
-    
-    def __init__(self, win, clock, use_trained_ai=False):
+    def __init__(self, win, clock, use_trained_ai=False, human_color=chess.WHITE):
         from engine.game.chess_game import ChessGame
         
         self.win = win
         self.clock = clock
         
         # use_trained_ai now just selects the strong AI setting (skill level 4); no model file is needed
-        self.game = ChessGame(strong_ai=use_trained_ai)
+        self.game = ChessGame(strong_ai=use_trained_ai, human_color=human_color)
         
         # Enable AI if requested
         if use_trained_ai:
@@ -46,11 +45,7 @@ class GameController:
                 print(f"AI {status}")
             
             elif event.key == pygame.K_s:
-                self.game.ai_color = chess.WHITE if self.game.ai_color == chess.BLACK else chess.BLACK
-                self.game.board_flipped = not self.game.board_flipped
-                self.game.movement.board_flipped = self.game.board_flipped
-                color = "White" if self.game.ai_color == chess.WHITE else "Black"
-                print(f"AI now plays {color}")
+                self.game.switch_sides()
             
             elif event.key == pygame.K_r:
                 self.game.board.reset()

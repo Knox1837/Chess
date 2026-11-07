@@ -11,7 +11,7 @@ from utils.config import *
 
 class ChessGame:
     """Main chess game logic"""
-    def __init__(self, strong_ai=False):
+    def __init__(self, strong_ai=False, human_color=chess.WHITE):
         self.board = chess.Board()
         self.selected_square = None
         self.valid_moves = []
@@ -23,11 +23,12 @@ class ChessGame:
         # AI setup
         self.ai = ChessAI(skill_level=4 if strong_ai else 2, ponder=strong_ai)   # strong AI thinks on your time
         self.ai_enabled = False
-        self.ai_color = chess.BLACK
+        self.ai_color = not human_color          # the AI plays the side the human did not pick
         self.ai_thinking = False
         self.ai_move_result = None   # Result posted here by background thread
         
-        self.board_flipped = False  # Track if board is to be flipped
+        self.board_flipped = (human_color == chess.BLACK)   # human at the bottom
+        self.movement.board_flipped = self.board_flipped
         # Highlight surfaces
         self.highlight_surf = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
         self.highlight_surf.fill((255, 255, 0, 100))
@@ -38,16 +39,39 @@ class ChessGame:
         self.last_move_surf = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
         self.last_move_surf.fill((255, 255, 0, 80))  # yellow, slightly transparent
     
+    def _human_may_move(self):
+        """False while it is the AI's turn, so you can't move the AI's pieces"""
+        return not (self.ai_enabled and self.board.turn == self.ai_color)
+
+    def switch_sides(self):
+        """Swap colours: the AI takes the other side and the board is flipped"""
+        if self.ai_thinking:
+            print("Wait for the AI to move before switching sides")
+            return False
+        self.ai_color = not self.ai_color
+        self.board_flipped = (self.ai_color == chess.WHITE)   # human at the bottom
+        self.movement.board_flipped = self.board_flipped
+        self.movement.selected_square = None
+        self.movement.valid_moves = []
+        print(f"AI now plays {'White' if self.ai_color == chess.WHITE else 'Black'}")
+        return True
+
     def handle_click(self, pos):
         """Handle mouse click for piece movement"""
+        if not self._human_may_move():
+            return False
         return self.movement.handle_click(pos)
     
     def handle_mouse_down(self, pos):
         """Handle mouse down for dragging"""
+        if not self._human_may_move():
+            return False
         return self.movement.handle_mouse_down(pos)
     
     def handle_mouse_up(self, pos):
         """Handle mouse up for dragging"""
+        if not self._human_may_move():
+            return False
         return self.movement.handle_mouse_up(pos)
     
     def handle_mouse_motion(self, pos):

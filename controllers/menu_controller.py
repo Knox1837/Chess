@@ -73,8 +73,11 @@ class MenuController:
                 self.start_game(use_trained_ai=False)
             
             elif choice == 2:
+                side = self.choose_side()
+                if side is None:
+                    continue
                 print("\nStarting game vs Trained AI...")
-                self.start_game(use_trained_ai=True)
+                self.start_game(use_trained_ai=True, human_color=side)
             
             elif choice == 4:
                 self.train_ai_screen()
@@ -92,9 +95,42 @@ class MenuController:
         pygame.quit()
         sys.exit()
     
-    def start_game(self, use_trained_ai=False):
+    def choose_side(self):
+        """Small screen: pick White, Black or Random. Returns chess.WHITE/BLACK, or None for ESC"""
+        import random
+        import chess
+        title_font = pygame.font.SysFont("arial", 48, bold=True)
+        font = pygame.font.SysFont("arial", 32)
+        lines = ["W  -  Play as White", "B  -  Play as Black", "R  -  Random", "ESC  -  Back"]
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_w:
+                        return chess.WHITE
+                    if event.key == pygame.K_b:
+                        return chess.BLACK
+                    if event.key == pygame.K_r:
+                        return random.choice([chess.WHITE, chess.BLACK])
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+            self.win.fill((30, 30, 30))
+            w = self.win.get_width()
+            title = title_font.render("Choose your side", True, (255, 255, 255))
+            self.win.blit(title, (w // 2 - title.get_width() // 2, 120))
+            for i, text in enumerate(lines):
+                surf = font.render(text, True, (220, 220, 220))
+                self.win.blit(surf, (w // 2 - surf.get_width() // 2, 230 + i * 60))
+            pygame.display.flip()
+            self.clock.tick(30)
+
+    def start_game(self, use_trained_ai=False, human_color=None):
         """Start a new game"""
-        game = self.GameController(self.win, self.clock, use_trained_ai)
+        import chess
+        game = self.GameController(self.win, self.clock, use_trained_ai,
+                                   human_color=chess.WHITE if human_color is None else human_color)
         game.run()
     
     def quick_start(self):
@@ -128,7 +164,10 @@ class MenuController:
             input("Press Enter to return to menu...")
             return
 
-        game = self.GameController(self.win, self.clock, use_trained_ai=False)
+        side = self.choose_side()
+        if side is None:
+            return
+        game = self.GameController(self.win, self.clock, use_trained_ai=False, human_color=side)
         game.game.ai_enabled = True
 
         # Patch the AI's choose_move to use Stockfish directly
