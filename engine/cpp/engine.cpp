@@ -26,7 +26,8 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
 
-// All output goes through here: the search thread and the command loop both print, and an unsynchronised std::cout can duplicate or garble lines.
+// All output goes through here: the search thread and the command loop both print, and an
+// unsynchronised std::cout can duplicate or garble lines.
 std::mutex outMutex;
 void emit(const std::string& line) {
     std::lock_guard<std::mutex> g(outMutex);
@@ -247,6 +248,7 @@ struct Options {
     int hashMB = 64;
     bool useNNUE = true;
     int noise = 0;
+    int softPercent = 75;   // don't start a new search depth after this % of the move time
 } opts;
 
 inline int evaluate(const Board& bd) {
@@ -517,7 +519,7 @@ class Search {
             const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
             if (!stopped || itBest.move() != 0) printInfo(depth, bestScore, nodes, secs, best);
             if (stopped || std::abs(bestScore) > MATE - 100) break;
-            if (hasTime && secs > seconds * 0.5) break;
+            if (hasTime && secs > seconds * opts.softPercent / 100.0) break;
         }
         scoreOut = bestScore;
         return best;
@@ -636,7 +638,8 @@ int main() {
                  "option name Hash type spin default 64 min 1 max 4096\n"
                  "option name UseNNUE type check default true\n"
                  "option name EvalFile type string default <empty>\n"
-                 "option name Noise type spin default 0 min 0 max 1000\nuciok");
+                 "option name Noise type spin default 0 min 0 max 1000\n"
+                 "option name SoftTime type spin default 75 min 20 max 100\nuciok");
         } else if (cmd == "isready") {
             emit("readyok");
         } else if (cmd == "ucinewgame") {
@@ -651,6 +654,7 @@ int main() {
             if (name == "Hash") { joinSearch(); opts.hashMB = std::max(1, std::stoi(value)); resizeTT(opts.hashMB); }
             else if (name == "UseNNUE") opts.useNNUE = (value == "true" || value == "1");
             else if (name == "Noise") opts.noise = std::max(0, std::stoi(value));
+            else if (name == "SoftTime") opts.softPercent = std::min(100, std::max(20, std::stoi(value)));
             else if (name == "EvalFile") {
                 if (!loadNet(value)) emit("info string could not load net: " + value);
                 else emit("info string loaded NNUE with hidden size " + std::to_string(net.H));

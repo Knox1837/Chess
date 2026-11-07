@@ -14,7 +14,7 @@ class GameController:
         self.win = win
         self.clock = clock
         
-        # use_trained_ai now just selects the strong AI setting (skill level 4)
+        # use_trained_ai now just selects the strong AI setting (skill level 4); no model file is needed
         self.game = ChessGame(strong_ai=use_trained_ai)
         
         # Enable AI if requested
@@ -27,7 +27,8 @@ class GameController:
             if event.type == pygame.QUIT:
                 return False
             
-            self._handle_keydown(event)
+            if self._handle_keydown(event) is False:      # ESC
+                return False
             self._handle_mouse_events(event)
         
         return True
@@ -107,4 +108,6 @@ class GameController:
             # Control frame rate
             self.clock.tick(60)
         
+        # Stop the AI's background thinking and close its engine process
+        self.game.ai.close()
         return True

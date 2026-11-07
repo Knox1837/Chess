@@ -1,18 +1,10 @@
 """
 Measure the chess AI against Stockfish at limited strength (the same ChessAI class the game uses).
 
-    python evaluate_engine.py                                   # level 4, Elo 1800 / 2200 / 2600, 10 games each
-    python evaluate_engine.py --movetime 0.1 --games 20         # quicker moves, more games
-    python evaluate_engine.py --level 5 --elos 2400 2800
-    python evaluate_engine.py --nnue                            # test the neural network instead of the hand-written eval
-
-Needs Stockfish (stockfishchess.org): engine\\stockfish.exe, or pass --stockfish PATH.
-Games alternate colours from random 4-ply openings. Games run one after another (no parallel
-workers), so the time-limited search is not starved of CPU.
-
-Read the Elo numbers as a way to COMPARE versions of your engine, not as an official rating:
-Stockfish's Elo limiter is calibrated for long time controls and plays weaker when it only gets
-a fraction of a second per move.
+python evaluate_engine.py                                   # level 4, Elo 1800 / 2200 / 2600, 10 games each
+python evaluate_engine.py --movetime 0.1 --games 20         # quicker moves, more games
+python evaluate_engine.py --level 5 --elos 2400 2800
+python evaluate_engine.py --nnue                            # test the neural network instead of the hand-written eval
 """
 import argparse
 import math
@@ -71,6 +63,7 @@ def main():
     ap.add_argument("--level", type=int, default=4, choices=[1, 2, 3, 4, 5], help="AI skill level (default 4)")
     ap.add_argument("--movetime", type=float, default=None, help="seconds per AI move for levels 4-5")
     ap.add_argument("--nnue", action="store_true", help="use the neural network (needs nnue.npz)")
+    ap.add_argument("--ponder", action="store_true", help="let the AI think on Stockfish's time (needs 2+ CPU cores to be fair; raises the score)")
     ap.add_argument("--elos", type=int, nargs="+", default=[1800, 2200, 2600], help="Stockfish Elo levels")
     ap.add_argument("--games", type=int, default=10, help="games per Elo level (even number is best)")
     ap.add_argument("--sf-time", type=float, default=0.1, help="seconds per Stockfish move")
@@ -78,7 +71,7 @@ def main():
     ap.add_argument("--stockfish", default=None)
     a = ap.parse_args()
 
-    ai = ChessAI(skill_level=a.level, use_nnue=a.nnue, time_limit=a.movetime)
+    ai = ChessAI(skill_level=a.level, use_nnue=a.nnue, time_limit=a.movetime, ponder=a.ponder)
     sf = chess.engine.SimpleEngine.popen_uci(find_stockfish(a.stockfish))
     opt = sf.options["UCI_Elo"]
     estimates = []
@@ -109,6 +102,7 @@ def main():
         print(f"Overall estimate (average of the informative levels): about {sum(estimates) / len(estimates):.0f}")
     else:
         print("Every level was won or lost completely - pick closer Elo levels (--elos) for an estimate.")
+
 
 if __name__ == "__main__":
     main()

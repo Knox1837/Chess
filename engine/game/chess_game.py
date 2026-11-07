@@ -21,7 +21,7 @@ class ChessGame:
         self.movement = ChessMovement(self.board, SQUARE_SIZE, WIDTH, HEIGHT)
         
         # AI setup
-        self.ai = ChessAI(skill_level=4 if strong_ai else 2)
+        self.ai = ChessAI(skill_level=4 if strong_ai else 2, ponder=strong_ai)   # strong AI thinks on your time
         self.ai_enabled = False
         self.ai_color = chess.BLACK
         self.ai_thinking = False

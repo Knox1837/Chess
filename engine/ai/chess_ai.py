@@ -276,8 +276,7 @@ def find_cpp_engine():
     return None
 
 class ChessAI:
-    def __init__(self, model_path=None, skill_level=1, use_nnue=False, time_limit=None, nnue_blend=1.0,
-                 use_cpp=True):
+    def __init__(self, model_path=None, skill_level=1, use_nnue=False, time_limit=None, nnue_blend=1.0, use_cpp=True, ponder=False, ponder_seconds=30.0):
         self.skill_level = max(1, min(5, int(skill_level)))
         self.time_limit = time_limit  # overrides the per-level time budget (seconds)
         self.model = None            # kept so old code that checks `ai.model` still works
@@ -286,6 +285,10 @@ class ChessAI:
         self.cpp = None
         self._lock = threading.Lock()
         self._game = object()
+        self.ponder = bool(ponder)          # think on the opponent's time (C++ backend, levels 4-5)
+        self.ponder_seconds = ponder_seconds  # safety cap so a forgotten game can't burn a CPU forever
+        self._ponder_job = None
+        self._closed = False
         if use_cpp and nnue_blend >= 1.0:
             self._start_cpp(model_path, use_nnue)
         if self.cpp is None and use_nnue and load_nnue is not None:
@@ -351,17 +354,25 @@ class ChessAI:
                         print(f"AI: not using the network in the C++ engine ({e})")
             eng.configure(cfg)
             self.cpp = eng
-            atexit.register(self.close)
+            # python-chess keeps a non-daemon thread alive per engine, and Python waits for such threads
+            try:
+                threading._register_atexit(self.close)
+            except Exception:
+                atexit.register(self.close)
         except Exception as e:
             print(f"AI: could not start the C++ engine ({e}); using the Python engine")
             self.cpp = None
 
     def new_game(self):
         """Forget the transposition table (call between games)."""
-        self._game = object()
+        with self._lock:
+            self._stop_ponder()
+            self._game = object()
         self.tt.clear()
 
     def close(self):
+        self._closed = True
+        self._stop_ponder()
         eng, self.cpp = self.cpp, None
         if eng is not None:
             try:
@@ -369,8 +380,31 @@ class ChessAI:
             except Exception:
                 pass
 
+    # pondering: keep searching during the opponent move
+    def _stop_ponder(self):
+        job, self._ponder_job = self._ponder_job, None
+        if job is not None:
+            try:
+                job.stop()
+                job.wait()
+            except Exception:
+                pass
+
+    def _start_ponder(self, board_after_our_move):
+        if not self.ponder or self.cpp is None or board_after_our_move.is_game_over():
+            return
+        try:
+            self._ponder_job = self.cpp.analysis(board_after_our_move,
+                                                 chess.engine.Limit(time=self.ponder_seconds),
+                                                 game=self._game)
+        except Exception as e:
+            print(f"AI: pondering disabled ({e})")
+            self.ponder = False
+            self._ponder_job = None
+
     def _cpp_choose(self, board):
         with self._lock:
+            self._stop_ponder()
             if not any(board.legal_moves):
                 return None
             depth, secs, sigma = CPP_LEVELS[self.skill_level]
@@ -382,6 +416,10 @@ class ChessAI:
             t0 = time.perf_counter()
             res = self.cpp.play(board, chess.engine.Limit(depth=depth, time=secs),
                                 game=self._game, info=chess.engine.INFO_ALL)
+            if res.move is not None and sigma == 0 and self.ponder:   # not for the weak levels / opening noise
+                after = board.copy()                                   # keeps the move history (repetitions)
+                after.push(res.move)
+                self._start_ponder(after)
         if res.move is None:
             return None
         sc = res.info.get("score")
@@ -659,12 +697,17 @@ class ChessAI:
         return move, true_score, depth
 
     def choose_move(self, board):
+        if self._closed:
+            return None
         if self.cpp is not None:
             try:
                 return self._cpp_choose(board)
             except Exception as e:
+                if self._closed:                      # the game was closed while we were thinking
+                    return None
                 print(f"AI: C++ engine failed ({e}); switching to the Python engine")
                 self.close()
+                self._closed = False                  # only the C++ engine is gone; Python search still works
         return self._py_choose_move(board)
 
     def _py_choose_move(self, board):

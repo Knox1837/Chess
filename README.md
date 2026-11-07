@@ -5,6 +5,7 @@ neural-network evaluator trained on Lichess data, and tools to measure how stron
 
 - **Play** against the AI, against a friend, or against Stockfish.
 - **C++ engine** (`engine/cpp/`): about 5 million nodes/sec, searches 10+ plies in well under a second.
+- **Thinks on your time:** in the strong setting the engine keeps searching while you choose your move (pondering).
 - **Strength:** roughly **2500-2600** against Stockfish limited to a given Elo, at 0.1 s per move
   (benchmark games against Stockfish, see [Strength](#strength)).
 - **Pure-Python fallback**: if the C++ engine has not been built, the game still works (just weaker and slower).
@@ -58,13 +59,13 @@ Speed check (the last line shows nodes per second; a Release build reaches milli
 |--------|-------------|
 | 1 | Human vs Human |
 | 2 | Play vs AI (strong setting, skill level 4) |
-| 3 | Play vs Basic AI (weak setting, skill level 2) |
-| 4 | Train a new model (legacy, see below) |
-| 5 | Play vs Stockfish (needs `engine/stockfish.exe`) |
-| 6 | Estimate the AI's Elo (plays in parallel; `evaluate_engine.py` is more reliable) |
-| 7 | Exit |
+| 3 | Train a new model (legacy, see below) |
+| 4 | Play vs Stockfish (needs `engine/stockfish.exe`) |
+| 5 | Estimate the AI's Elo (plays in parallel; `evaluate_engine.py` is more reliable) |
+| 6 | Exit |
 
-Options 2 and 3 only differ in skill level; neither needs a model file.
+Option 2 needs no model file. The weaker skill levels (1-3) are still available in code through
+`ChessAI(skill_level=...)` but are not offered in the menu.
 
 ## Controls
 
@@ -76,7 +77,10 @@ Options 2 and 3 only differ in skill level; neither needs a model file.
 | R | Reset board |
 | Z | Undo move |
 | ESC | Return to menu |
-| F11 | Toggle fullscreen (the window can also be maximized or resized; the board scales to fit) |
+| F11 | Toggle fullscreen |
+
+The window opens maximized and the board scales to fit; you can also resize it by hand. To start in a normal
+window instead, run `python main.py --windowed`.
 
 ## Skill levels
 
@@ -104,6 +108,14 @@ engine's own score in pawns from White's point of view (`#3` = forced mate). It 
 - **Evaluation:** tapered middlegame/endgame piece-square tables (PeSTO) plus bishop pair, passed,
   isolated and doubled pawns, rook files and a king pawn shield.
 - **Optional neural evaluation:** a king-bucketed network seen from both players' sides (see Training).
+- **Time management:** a move gets its full time budget. The engine stops starting a new search depth after
+  75% of the move time (UCI option `SoftTime`, 20-100), and a depth that is cut off still counts if it already
+  found a better move.
+- **Pondering:** after the strong AI moves, it searches the position in the background while you think
+  (up to 30 s), so its next search starts with deep results for the likely replies. In a test against Stockfish
+  limited to 1800 (0.1 s per move) it guessed the reply 44% of the time; when it did, the next search was about
+  1 ply deeper, otherwise no gain, so about half a ply on average. It keeps one CPU core busy while you think.
+  Turn it off with `ChessAI(..., ponder=False)` (set in `engine/game/chess_game.py`).
 - **Board and move generation:** the third-party `chess.hpp` library (see Credits). The engine speaks
   UCI, and `engine/ai/chess_ai.py` talks to it through `python-chess`.
 
@@ -137,6 +149,7 @@ How to read it:
 - With 10-60 games per level the margin is roughly +/-100 Elo. Differences of a few dozen points between
   two versions are noise; changes of a few hundred points are real.
 - The engine searches by time, so results depend on the CPU it runs on.
+- These runs were made before the time-budget change and without pondering; re-run `evaluate_engine.py` to refresh them.
 
 Reproduce it (needs `engine/stockfish.exe`, or pass `--stockfish PATH`):
 
@@ -147,7 +160,8 @@ python evaluate_engine.py --movetime 0.1 --games 50 --elos 2400 2600 2800
 
 The script plays the AI against Stockfish one game at a time (no parallel workers, so the time-limited
 search is not starved of CPU) and prints win/draw/loss counts, a performance estimate per level, and the
-total time taken. Other flags: `--level`, `--sf-time`, `--nnue`, `--max-plies`. Pick Elo levels close to
+total time taken. Other flags: `--level`, `--sf-time`, `--nnue`, `--ponder` (let the AI think on Stockfish's time; needs 2+ CPU cores),
+`--max-plies`. Pick Elo levels close to
 the engine's strength, because a 100% or 0% score only gives a bound.
 
 ## Training the neural network
@@ -190,9 +204,9 @@ the network, create the AI with `ChessAI(skill_level=4, use_nnue=True)`; the C++
 that is generated next to `nnue.npz` on first use. Making it competitive needs a smaller hidden size or
 incremental updates inside the C++ engine.
 
-## Legacy training (menu option 4)
+## Legacy training (menu option 3)
 
-Menu option 4 trains the original convolutional network from PGN games placed in `engine/data/raw/`
+Menu option 3 trains the original convolutional network from PGN games placed in `engine/data/raw/`
 (`engine/data/pgn_processor.py`, `engine/ai/chess_trainer.py`, `engine/models/chess_net.py`). The AI no
 longer uses that network, so use `train_nnue.py` instead. These files are kept only so the menu still starts.
 

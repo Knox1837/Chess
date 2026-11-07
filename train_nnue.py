@@ -289,6 +289,8 @@ def cmd_match(a):
             res = "hand-eval wins"
             lengths["loss"].append(board.ply())
         print(f"game {g + 1}/{a.games}: {res} in {board.ply()} plies   (NNUE +{w} ={d} -{l})", flush=True)
+    nn_ai.close()
+    hc_ai.close()
     score = (w + 0.5 * d) / max(1, a.games)
     margin = 100 * math.sqrt(0.25 / max(1, a.games))
     print(f"\nNNUE score: {100 * score:.0f}% +/- {margin:.0f}  ({w}W {d}D {l}L)")
@@ -314,7 +316,7 @@ def cmd_compare(a):
     net = load_nnue(path)
 
     bbs, labs = [], []
-    for d in a.data:# same order + seed as `train` => same validation split
+    for d in a.data:                                 # same order + seed as `train` => same validation split
         bbs.append(np.load(Path(d) / "bitboards.npy"))
         labs.append(np.load(Path(d) / "labels.npy").astype(np.float32))
     bb, lab = np.concatenate(bbs), np.concatenate(labs)
