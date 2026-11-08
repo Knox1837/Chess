@@ -6,7 +6,7 @@ import pygame
 import threading
 from engine.game.piece_movement import ChessMovement
 from engine.ai.chess_ai import ChessAI
-from ui.game_ui import load_piece_images, draw_board, draw_pieces, draw_status, draw_highlights
+from ui.game_ui import load_piece_images, draw_board, draw_pieces, draw_status, draw_highlights, draw_coordinates
 from utils.config import *
 
 class ChessGame:
@@ -100,6 +100,9 @@ class ChessGame:
 
         # Draw pieces
         draw_pieces(win, self.board, self.piece_images, self.board_flipped)
+
+        # Draw file letters and rank numbers
+        draw_coordinates(win, self.board_flipped)
         
         # Draw dragged piece if any
         self.movement.draw_dragged_piece(win, self.piece_images)

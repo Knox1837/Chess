@@ -40,6 +40,27 @@ def draw_board(win):
             color = WHITE if (row + col) % 2 == 0 else BLACK
             pygame.draw.rect(win, color, (col * SQUARE_SIZE, row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE))
 
+_coord_font = None
+
+def draw_coordinates(win, flipped=False):
+    """Draw file letters (bottom edge) and rank numbers (left edge) inside the edge squares"""
+    global _coord_font
+    if _coord_font is None:
+        _coord_font = pygame.font.SysFont("arial", max(12, SQUARE_SIZE // 5), bold=True)
+    pad = 3
+    for i in range(8):
+        # file letter on the bottom row, at that column's bottom-right corner
+        file_char = chr(ord('a') + (7 - i if flipped else i))
+        light = (7 + i) % 2 == 0                      # square colour at (row 7, col i)
+        text = _coord_font.render(file_char, True, BLACK if light else WHITE)
+        win.blit(text, ((i + 1) * SQUARE_SIZE - text.get_width() - pad,
+                        HEIGHT - text.get_height() - pad))
+        # rank number on the left column, at that row's top-left corner
+        rank_char = str(i + 1 if flipped else 8 - i)
+        light = (i + 0) % 2 == 0                      # square colour at (row i, col 0)
+        text = _coord_font.render(rank_char, True, BLACK if light else WHITE)
+        win.blit(text, (pad, i * SQUARE_SIZE + pad))
+
 def draw_pieces(win, board, piece_images, flipped=False):
     for square in chess.SQUARES:
         piece = board.piece_at(square)
