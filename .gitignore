@@ -11,3 +11,4 @@ engine/stockfish.exe
 build/
 engine/bin/
 engine/data/raw/
+engine/models/saved/nnue.bin

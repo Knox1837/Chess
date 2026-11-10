@@ -249,6 +249,9 @@ struct Options {
     bool useNNUE = true;
     int noise = 0;
     int softPercent = 75;   // don't start a new search depth after this % of the move time
+    int rfpMargin = 80;     // reverse futility pruning: cp per remaining depth (0 = off)
+    int fpMargin = 120;     // futility pruning of quiet moves: cp per remaining depth (0 = off)
+    int lmp = 1;            // late move pruning of quiet moves at low depth (0 = off)
 } opts;
 
 inline int evaluate(const Board& bd) {
@@ -410,6 +413,18 @@ class Search {
             }
         }
 
+        // Static evaluation, only computed where a pruning rule can use it
+        const bool pvNode = beta - alpha > 1;
+        const bool nonPawn = bd.hasNonPawnMaterial(bd.sideToMove());
+        int staticEval = 0;
+        const bool useEval = !pvNode && !inCheck && depth <= 6 && (opts.rfpMargin > 0 || opts.fpMargin > 0);
+        if (useEval) staticEval = evaluate(bd);
+
+        // Reverse futility pruning: far above beta at low depth, so the node would fail high anyway
+        if (useEval && opts.rfpMargin > 0 && nonPawn && std::abs(beta) < MATE - 1000 &&
+            staticEval - opts.rfpMargin * depth >= beta)
+            return staticEval - opts.rfpMargin * depth;
+
         if (allowNull && !inCheck && depth >= 3 && beta < MATE - 1000 && bd.hasNonPawnMaterial(bd.sideToMove())) {
             bd.makeNullMove();
             const int s = -negamax(depth - 3 - (depth > 6), -beta, -beta + 1, ply + 1, false);
@@ -432,6 +447,17 @@ class Search {
             const Move m = mv[i].m;
             const bool quiet = !bd.isCapture(m) && m.typeOf() != Move::PROMOTION;
             bd.makeMove(m);
+            // Futility and late-move pruning of quiet moves (never in check, never when giving check)
+            if (i > 0 && quiet && !pvNode && !inCheck && best > -MATE + 1000 && !bd.inCheck()) {
+                if (opts.fpMargin > 0 && depth <= 3 && staticEval + opts.fpMargin * depth <= alpha) {
+                    bd.unmakeMove(m);
+                    continue;
+                }
+                if (opts.lmp && depth <= 3 && i >= 3 + depth * depth) {
+                    bd.unmakeMove(m);
+                    continue;
+                }
+            }
             int score;
             if (i == 0) {
                 score = -negamax(depth - 1, -beta, -alpha, ply + 1, true);
@@ -639,7 +665,10 @@ int main() {
                  "option name UseNNUE type check default true\n"
                  "option name EvalFile type string default <empty>\n"
                  "option name Noise type spin default 0 min 0 max 1000\n"
-                 "option name SoftTime type spin default 75 min 20 max 100\nuciok");
+                 "option name SoftTime type spin default 75 min 20 max 100\n"
+                 "option name RFP type spin default 80 min 0 max 400\n"
+                 "option name FP type spin default 120 min 0 max 600\n"
+                 "option name LMP type spin default 1 min 0 max 1\nuciok");
         } else if (cmd == "isready") {
             emit("readyok");
         } else if (cmd == "ucinewgame") {
@@ -655,6 +684,9 @@ int main() {
             else if (name == "UseNNUE") opts.useNNUE = (value == "true" || value == "1");
             else if (name == "Noise") opts.noise = std::max(0, std::stoi(value));
             else if (name == "SoftTime") opts.softPercent = std::min(100, std::max(20, std::stoi(value)));
+            else if (name == "RFP") opts.rfpMargin = std::min(400, std::max(0, std::stoi(value)));
+            else if (name == "FP") opts.fpMargin = std::min(600, std::max(0, std::stoi(value)));
+            else if (name == "LMP") opts.lmp = std::stoi(value) != 0;
             else if (name == "EvalFile") {
                 if (!loadNet(value)) emit("info string could not load net: " + value);
                 else emit("info string loaded NNUE with hidden size " + std::to_string(net.H));
