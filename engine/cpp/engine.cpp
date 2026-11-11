@@ -252,7 +252,20 @@ struct Options {
     int rfpMargin = 80;     // reverse futility pruning: cp per remaining depth (0 = off)
     int fpMargin = 120;     // futility pruning of quiet moves: cp per remaining depth (0 = off)
     int lmp = 1;            // late move pruning of quiet moves at low depth (0 = off)
+    int lmr = 0;            // log-based late move reductions (0 = old fixed 1/2 ply reductions)
+    int histMalus = 1;      // bounded history with a penalty for quiet moves that failed to cut (0 = old additive history)
+    int histLmr = 0;        // reduce moves with a good history score less, poor ones more (0 = off)
 } opts;
+
+// Late move reduction table: grows with depth and move number
+int LMR_TABLE[64][64];
+void initLMR() {
+    for (int d = 1; d < 64; ++d)
+        for (int m = 1; m < 64; ++m)
+            LMR_TABLE[d][m] = int(0.75 + std::log(double(d)) * std::log(double(m)) / 2.25);
+}
+constexpr int HIST_MAX = 16384;
+inline void updateHistory(int& h, int bonus) { h += bonus - h * std::abs(bonus) / HIST_MAX; }
 
 inline int evaluate(const Board& bd) {
     return (opts.useNNUE && net.ok) ? evalNet(bd) : evalHand(bd);
@@ -442,6 +455,8 @@ class Search {
 
         int best = -INF;
         Move bestMove{Move::NO_MOVE};
+        Move quiets[64];       // quiet moves tried so far at this node (for the history penalty)
+        int nq = 0;
         for (int i = 0; i < n; ++i) {
             pickBest(mv, n, i);
             const Move m = mv[i].m;
@@ -463,7 +478,15 @@ class Search {
                 score = -negamax(depth - 1, -beta, -alpha, ply + 1, true);
             } else {
                 int red = 0;
-                if (depth >= 3 && i >= 4 && quiet && !inCheck && !bd.inCheck())
+                if (opts.lmr) {
+                    if (depth >= 3 && i >= 3 && quiet && !inCheck && !bd.inCheck()) {
+                        red = LMR_TABLE[std::min(depth, 63)][std::min(i, 63)];
+                        if (pvNode) --red;
+                        if (opts.histLmr)
+                            red -= std::max(-2, std::min(2, history[stm][m.from().index()][m.to().index()] / 4096));
+                        red = std::max(0, std::min(red, depth - 2));
+                    }
+                } else if (depth >= 3 && i >= 4 && quiet && !inCheck && !bd.inCheck())
                     red = (i >= 10 && depth >= 5) ? 2 : 1;
                 score = -negamax(depth - 1 - red, -alpha - 1, -alpha, ply + 1, true);
                 if (score > alpha && (red || score < beta))
@@ -480,12 +503,20 @@ class Search {
                         if (quiet) {
                             if (!(killers[ply][0] == m)) { killers[ply][1] = killers[ply][0]; killers[ply][0] = m; }
                             int& h = history[stm][m.from().index()][m.to().index()];
-                            h = std::min(h + depth * depth, 1000000);
+                            if (opts.histMalus) {
+                                const int bonus = std::min(300 * depth - 250, 2400);
+                                updateHistory(h, bonus);
+                                for (int j = 0; j < nq; ++j)       // earlier quiet moves did not cut: penalise them
+                                    updateHistory(history[stm][quiets[j].from().index()][quiets[j].to().index()], -bonus);
+                            } else {
+                                h = std::min(h + depth * depth, 1000000);
+                            }
                         }
                         break;
                     }
                 }
             }
+            if (quiet && nq < 64) quiets[nq++] = m;
         }
 
         const uint8_t flag = best <= origAlpha ? 2 : (best >= beta ? 1 : 0);
@@ -653,6 +684,7 @@ int main() {
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
     initEval();
+    initLMR();
     resizeTT(opts.hashMB);
     std::string line;
     while (std::getline(std::cin, line)) {
@@ -668,7 +700,10 @@ int main() {
                  "option name SoftTime type spin default 75 min 20 max 100\n"
                  "option name RFP type spin default 80 min 0 max 400\n"
                  "option name FP type spin default 120 min 0 max 600\n"
-                 "option name LMP type spin default 1 min 0 max 1\nuciok");
+                 "option name LMP type spin default 1 min 0 max 1\n"
+                 "option name LMR type spin default 0 min 0 max 1\n"
+                 "option name HistMalus type spin default 1 min 0 max 1\n"
+                 "option name HistLMR type spin default 0 min 0 max 1\nuciok");
         } else if (cmd == "isready") {
             emit("readyok");
         } else if (cmd == "ucinewgame") {
@@ -687,6 +722,9 @@ int main() {
             else if (name == "RFP") opts.rfpMargin = std::min(400, std::max(0, std::stoi(value)));
             else if (name == "FP") opts.fpMargin = std::min(600, std::max(0, std::stoi(value)));
             else if (name == "LMP") opts.lmp = std::stoi(value) != 0;
+            else if (name == "LMR") opts.lmr = std::stoi(value) != 0;
+            else if (name == "HistMalus") opts.histMalus = std::stoi(value) != 0;
+            else if (name == "HistLMR") opts.histLmr = std::stoi(value) != 0;
             else if (name == "EvalFile") {
                 if (!loadNet(value)) emit("info string could not load net: " + value);
                 else emit("info string loaded NNUE with hidden size " + std::to_string(net.H));
