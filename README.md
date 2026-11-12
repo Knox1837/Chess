@@ -6,9 +6,10 @@ neural-network evaluator trained on Lichess data, and tools to measure how stron
 - **Play** against the AI, against a friend, or against Stockfish.
 - **C++ engine** (`engine/cpp/`): millions of nodes per second, searches 10+ plies in well under a second.
 - **Thinks on your time:** in the strong setting the engine keeps searching while you choose your move (pondering).
-- **Strength:** roughly **2500-2550** against Stockfish limited to a given Elo, at 0.1 s per move
-  (benchmark games against Stockfish, see [Strength](#strength)). Later search improvements gained roughly
-  +20-30 Elo each in head-to-head matches and have not been re-measured against Stockfish yet.
+- **Strength:** roughly **2550-2600** against Stockfish limited to a given Elo, at 0.1 s per move
+  (benchmark games against Stockfish, see [Strength](#strength)). Search improvements since the first
+  measurements gained much more in head-to-head matches (see [Comparing engine versions](#comparing-engine-versions))
+  than they show against Stockfish.
 - **Pure-Python fallback**: if the C++ engine has not been built, the game still works (just weaker and slower).
 - **NNUE-style network** (`train_nnue.py`): trained from the Lichess evaluation database; optional.
 - **Evaluation tools**: `evaluate_engine.py` (vs Stockfish), `match_engines.py` (one engine build or option set vs
@@ -115,7 +116,8 @@ engine's own score in pawns from White's point of view (`#3` = forced mate). It 
 - **Search:** iterative deepening, principal-variation search, transposition table, null-move pruning,
   reverse futility pruning, futility and late-move pruning of quiet moves, late-move reductions, check
   extensions, killer/history move ordering (the history table also penalises quiet moves that were tried
-  and failed to cut), quiescence search.
+  and failed to cut), static exchange evaluation (SEE) to order captures and to skip losing captures in
+  quiescence search, quiescence search.
 - **Evaluation:** tapered middlegame/endgame piece-square tables (PeSTO) plus bishop pair, passed,
   isolated and doubled pawns, rook files and a king pawn shield.
 - **Optional neural evaluation:** a king-bucketed network seen from both players' sides (see Training).
@@ -142,17 +144,18 @@ engine's own score in pawns from White's point of view (`#3` = forced mate). It 
 | `FP` | 120 | futility pruning margin for quiet moves at depth 3 or less, 0 = off |
 | `LMP` | 1 | late-move pruning of quiet moves at depth 3 or less, 0 = off |
 | `HistMalus` | 1 | bounded history with a penalty for quiet moves that failed to cut, 0 = old additive history |
+| `SEE` | 2 | static exchange evaluation: 1 = order captures by it (losing captures last), 2 = also skip losing captures in quiescence, 0 = off |
 | `LMR` | 0 | log-based late-move reduction table, 0 = the older fixed 1-2 ply reductions |
 | `HistLMR` | 0 | reduce moves with a good history score less (only has an effect with `LMR=1`) |
 
 Every search change is behind an option, so a build can be compared against itself with the option switched
-off (see [Comparing engine versions](#comparing-engine-versions)). With `RFP=0 FP=0 LMP=0 HistMalus=0` the
+off (see [Comparing engine versions](#comparing-engine-versions)). With `RFP=0 FP=0 LMP=0 HistMalus=0 SEE=0` the
 search is identical to the version before these changes. The `bench` command prints a node count that can be
 used to check that.
 
 ## Strength
 
-**Current estimate: roughly 2500-2550 against Stockfish limited to a given Elo**, with the engine at
+**Current estimate: roughly 2550-2600 against Stockfish limited to a given Elo**, with the engine at
 skill level 4 and both sides playing 0.1 s per move. This comes from benchmark games against Stockfish
 (`evaluate_engine.py`), not from a rating list or games against people, so use it to compare versions
 of this engine rather than as an official rating.
@@ -179,6 +182,21 @@ levels' performance estimates; before the pruning and history changes):
 | 3 | ~2508 | 11 min |
 | 4 | ~2471 | 9 min |
 
+After the pruning, history-penalty and SEE changes (100 games per level, 3 games at once):
+
+| Levels | Result | Estimate |
+|---|---|---|
+| 2600 and 2800 | overall estimate | ~2544 |
+| 2800 | 7W 17D 76L (16%) | ~2505 |
+| 2800 and 3000 | overall estimate | ~2586 |
+| 3000 | 0W 17D 83L (8%) | ~2587 |
+
+The same build therefore reads about 2500-2590 depending on the level and the run. The head-to-head tests show
+the changes are worth far more than this scale suggests (SEE alone +139 against the previous build), because
+games against a copy of the same engine exaggerate gains, and Stockfish's limited-strength mode compresses
+differences near the top of its range. Use the Stockfish figure as a slowly moving yardstick and
+`match_engines.py` to judge changes.
+
 Repeated 30-game-per-level runs of the same build scattered between about 2440 and 2600, which is what the
 sample size allows. The drift down with more parallel games is within the noise but fits what a laptop does
 when all cores are busy (lower clocks, so the engines search a little less in the same time).
@@ -193,8 +211,9 @@ How to read it:
 - With 10-60 games per level the margin is roughly +/-100 Elo, with 100 games about +/-40. Differences of a
   few dozen points between two runs are noise; to compare two versions of the engine use `match_engines.py`.
 - The engine searches by time, so results depend on the CPU it runs on.
-- The Stockfish runs were made before the pruning and history-penalty changes and without pondering; re-run
-  `evaluate_engine.py` to refresh them.
+- The first table (2 / 3 / 4 games at once) was measured before the pruning, history-penalty and SEE changes.
+  None of the Stockfish runs used pondering. A score close to 0% or 100% at one level makes that level's
+  estimate unreliable, so prefer levels where the score is between about 15% and 85%.
 
 Reproduce it (needs `engine/stockfish.exe`, or pass `--stockfish PATH`):
 
@@ -245,10 +264,11 @@ Results so far (300 games at 0.1 s per move unless noted; positive = the first o
 | pruning (`RFP`, `FP`, `LMP`) vs none | +24 | [-9, +58] | on by default (a 120-game test at 0.05 s gave +29) |
 | `HistMalus=1` vs 0 | +42 | [+9, +76] | on by default |
 | default build vs the pruning-only build | +23 | [-11, +58] | consistent with the line above |
+| `SEE=2` vs 0 | +139 | [+103, +178] | on by default (a 120-game test at 0.05 s gave +101) |
 | `LMR=1` alone vs the older build | -7 | [-42, +28] | off |
 | `LMR=1 HistMalus=1 HistLMR=1` vs `HistMalus=0` | +19 | [-15, +53] | worse than `HistMalus` alone, so `LMR` and `HistLMR` stay off |
 
-Ideas not done yet: static exchange evaluation for captures, aspiration windows, tuning the evaluation
+Ideas not done yet: aspiration windows, null-move refinements, tuning the evaluation
 weights, multi-threaded search, an opening book, a smaller or incrementally updated neural network.
 
 ## Training the neural network

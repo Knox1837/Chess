@@ -255,6 +255,7 @@ struct Options {
     int lmr = 0;            // log-based late move reductions (0 = old fixed 1/2 ply reductions)
     int histMalus = 1;      // bounded history with a penalty for quiet moves that failed to cut (0 = old additive history)
     int histLmr = 0;        // reduce moves with a good history score less, poor ones more (0 = off)
+    int see = 2;            // static exchange evaluation: 1 = order captures by it, 2 = also skip losing captures in quiescence
 } opts;
 
 // Late move reduction table: grows with depth and move number
@@ -320,6 +321,74 @@ class Search {
         return timed && Clock::now() >= deadline;
     }
 
+    // Static exchange evaluation: true if capturing on m.to() and then recapturing with the least valuable
+    // attacker each time leaves the mover with at least `threshold` centipawns. Pins are ignored.
+    bool seeGe(const Move& m, int threshold) const {
+        if (m.typeOf() == Move::CASTLING) return threshold <= 0;
+        const Square to = m.to();
+        const Square from = m.from();
+        const bool ep = m.typeOf() == Move::ENPASSANT;
+        const int victim = ep ? 1 : int(bd.at<PieceType>(to)) + 1;       // index into ORDER_VAL (0 = empty)
+        int swap = ORDER_VAL[victim] - threshold;
+        if (swap < 0) return false;
+        swap = ORDER_VAL[int(bd.at<PieceType>(from)) + 1] - swap;
+        if (swap <= 0) return true;
+
+        uint64_t occ = bd.occ().getBits() ^ (1ULL << from.index()) ^ (1ULL << to.index());
+        Color stm = bd.sideToMove();
+        if (ep) occ ^= 1ULL << (to.index() + (stm == Color::WHITE ? -8 : 8));   // captured pawn leaves the board
+
+        const uint64_t pawns = bd.pieces(PieceType::PAWN).getBits();
+        const uint64_t knights = bd.pieces(PieceType::KNIGHT).getBits();
+        const uint64_t bishops = bd.pieces(PieceType::BISHOP).getBits();
+        const uint64_t rooks = bd.pieces(PieceType::ROOK).getBits();
+        const uint64_t queens = bd.pieces(PieceType::QUEEN).getBits();
+        const uint64_t kings = bd.pieces(PieceType::KING).getBits();
+        const uint64_t diag = bishops | queens;
+        const uint64_t line = rooks | queens;
+        const uint64_t white = bd.us(Color::WHITE).getBits();
+        const uint64_t black = bd.us(Color::BLACK).getBits();
+
+        uint64_t attackers = (attacks::pawn(Color::BLACK, to).getBits() & pawns & white) |
+                             (attacks::pawn(Color::WHITE, to).getBits() & pawns & black) |
+                             (attacks::knight(to).getBits() & knights) | (attacks::king(to).getBits() & kings) |
+                             (attacks::bishop(to, Bitboard(occ)).getBits() & diag) |
+                             (attacks::rook(to, Bitboard(occ)).getBits() & line);
+        int res = 1;
+        while (true) {
+            stm = ~stm;
+            attackers &= occ;
+            const uint64_t mine = attackers & (stm == Color::WHITE ? white : black);
+            if (!mine) break;
+            res ^= 1;
+            uint64_t bb;
+            if ((bb = mine & pawns)) {
+                if ((swap = ORDER_VAL[1] - swap) < res) break;
+                occ ^= bb & (~bb + 1);
+                attackers |= attacks::bishop(to, Bitboard(occ)).getBits() & diag;
+            } else if ((bb = mine & knights)) {
+                if ((swap = ORDER_VAL[2] - swap) < res) break;
+                occ ^= bb & (~bb + 1);
+            } else if ((bb = mine & bishops)) {
+                if ((swap = ORDER_VAL[3] - swap) < res) break;
+                occ ^= bb & (~bb + 1);
+                attackers |= attacks::bishop(to, Bitboard(occ)).getBits() & diag;
+            } else if ((bb = mine & rooks)) {
+                if ((swap = ORDER_VAL[4] - swap) < res) break;
+                occ ^= bb & (~bb + 1);
+                attackers |= attacks::rook(to, Bitboard(occ)).getBits() & line;
+            } else if ((bb = mine & queens)) {
+                if ((swap = ORDER_VAL[5] - swap) < res) break;
+                occ ^= bb & (~bb + 1);
+                attackers |= (attacks::bishop(to, Bitboard(occ)).getBits() & diag) |
+                             (attacks::rook(to, Bitboard(occ)).getBits() & line);
+            } else {   // king: only captures if the other side has no attacker left
+                return (attackers & ~(stm == Color::WHITE ? white : black)) ? bool(res ^ 1) : bool(res);
+            }
+        }
+        return bool(res);
+    }
+
     int orderMoves(const Movelist& ml, Scored* out, Move ttMove, int ply) {
         const int stm = bd.sideToMove() == Color::WHITE ? 0 : 1;
         int n = 0;
@@ -331,6 +400,7 @@ class Search {
                 int attacker = int(bd.at<PieceType>(m.from())) + 1;
                 s = 1000000 + 10 * ORDER_VAL[victim] - ORDER_VAL[attacker] / 10;
                 if (m.typeOf() == Move::PROMOTION) s += 5000;
+                else if (opts.see && !seeGe(m, 0)) s -= 2000000;   // losing capture: after the quiet moves
             } else if (m.typeOf() == Move::PROMOTION) s = 900000 + int(m.promotionType());
             else if (m == killers[ply][0]) s = 800000;
             else if (m == killers[ply][1]) s = 790000;
@@ -375,6 +445,7 @@ class Search {
             if (!inCheck) {
                 int victim = m.typeOf() == Move::ENPASSANT ? 1 : int(bd.at<PieceType>(m.to())) + 1;
                 if (stand + ORDER_VAL[victim] + 200 < alpha && m.typeOf() != Move::PROMOTION) continue;
+                if (opts.see >= 2 && m.typeOf() != Move::PROMOTION && !seeGe(m, 0)) continue;   // losing capture
             }
             bd.makeMove(m);
             const int score = -qsearch(-beta, -alpha, ply + 1, qd + 1);
@@ -703,7 +774,8 @@ int main() {
                  "option name LMP type spin default 1 min 0 max 1\n"
                  "option name LMR type spin default 0 min 0 max 1\n"
                  "option name HistMalus type spin default 1 min 0 max 1\n"
-                 "option name HistLMR type spin default 0 min 0 max 1\nuciok");
+                 "option name HistLMR type spin default 0 min 0 max 1\n"
+                 "option name SEE type spin default 2 min 0 max 2\nuciok");
         } else if (cmd == "isready") {
             emit("readyok");
         } else if (cmd == "ucinewgame") {
@@ -725,6 +797,7 @@ int main() {
             else if (name == "LMR") opts.lmr = std::stoi(value) != 0;
             else if (name == "HistMalus") opts.histMalus = std::stoi(value) != 0;
             else if (name == "HistLMR") opts.histLmr = std::stoi(value) != 0;
+            else if (name == "SEE") opts.see = std::min(2, std::max(0, std::stoi(value)));
             else if (name == "EvalFile") {
                 if (!loadNet(value)) emit("info string could not load net: " + value);
                 else emit("info string loaded NNUE with hidden size " + std::to_string(net.H));
