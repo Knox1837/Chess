@@ -144,6 +144,8 @@ engine's own score in pawns from White's point of view (`#3` = forced mate). It 
 | `FP` | 120 | futility pruning margin for quiet moves at depth 3 or less, 0 = off |
 | `LMP` | 1 | late-move pruning of quiet moves at depth 3 or less, 0 = off |
 | `HistMalus` | 1 | bounded history with a penalty for quiet moves that failed to cut, 0 = old additive history |
+| `NullEval` | 0 | only try the null move when the static eval is at or above beta |
+| `NullDepth` | 0 | null-move reduction 3 + depth/4 instead of 3 (4 above depth 6) |
 | `SEE` | 2 | static exchange evaluation: 1 = order captures by it (losing captures last), 2 = also skip losing captures in quiescence, 0 = off |
 | `LMR` | 0 | log-based late-move reduction table, 0 = the older fixed 1-2 ply reductions |
 | `HistLMR` | 0 | reduce moves with a good history score less (only has an effect with `LMR=1`) |
@@ -265,10 +267,12 @@ Results so far (300 games at 0.1 s per move unless noted; positive = the first o
 | `HistMalus=1` vs 0 | +42 | [+9, +76] | on by default |
 | default build vs the pruning-only build | +23 | [-11, +58] | consistent with the line above |
 | `SEE=2` vs 0 | +139 | [+103, +178] | on by default (a 120-game test at 0.05 s gave +101) |
+| `NullEval=1` vs 0 (400 games) | +9 | [-21, +38] | off (no evidence of a gain) |
+| `NullDepth=1` vs 0 (400 games) | -5 | [-35, +25] | off (no evidence of a gain) |
 | `LMR=1` alone vs the older build | -7 | [-42, +28] | off |
 | `LMR=1 HistMalus=1 HistLMR=1` vs `HistMalus=0` | +19 | [-15, +53] | worse than `HistMalus` alone, so `LMR` and `HistLMR` stay off |
 
-Ideas not done yet: aspiration windows, null-move refinements, tuning the evaluation
+Ideas not done yet: aspiration windows, tuning the evaluation
 weights, multi-threaded search, an opening book, a smaller or incrementally updated neural network.
 
 ## Training the neural network

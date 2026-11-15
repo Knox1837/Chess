@@ -255,6 +255,8 @@ struct Options {
     int lmr = 0;            // log-based late move reductions (0 = old fixed 1/2 ply reductions)
     int histMalus = 1;      // bounded history with a penalty for quiet moves that failed to cut (0 = old additive history)
     int histLmr = 0;        // reduce moves with a good history score less, poor ones more (0 = off)
+    int nullEval = 0;       // only try the null move when the static eval is at or above beta (0 = off)
+    int nullDepth = 0;      // null-move reduction 3 + depth/4 instead of 3 (+1 above depth 6) (0 = off)
     int see = 2;            // static exchange evaluation: 1 = order captures by it, 2 = also skip losing captures in quiescence
 } opts;
 
@@ -502,6 +504,7 @@ class Search {
         const bool nonPawn = bd.hasNonPawnMaterial(bd.sideToMove());
         int staticEval = 0;
         const bool useEval = !pvNode && !inCheck && depth <= 6 && (opts.rfpMargin > 0 || opts.fpMargin > 0);
+        bool haveEval = useEval;
         if (useEval) staticEval = evaluate(bd);
 
         // Reverse futility pruning: far above beta at low depth, so the node would fail high anyway
@@ -510,11 +513,15 @@ class Search {
             return staticEval - opts.rfpMargin * depth;
 
         if (allowNull && !inCheck && depth >= 3 && beta < MATE - 1000 && bd.hasNonPawnMaterial(bd.sideToMove())) {
-            bd.makeNullMove();
-            const int s = -negamax(depth - 3 - (depth > 6), -beta, -beta + 1, ply + 1, false);
-            bd.unmakeNullMove();
-            if (stopped) return 0;
-            if (s >= beta) return beta;
+            if (opts.nullEval && !haveEval) { staticEval = evaluate(bd); haveEval = true; }
+            if (!opts.nullEval || staticEval >= beta) {
+                const int R = opts.nullDepth ? 3 + depth / 4 : 3 + (depth > 6);
+                bd.makeNullMove();
+                const int s = -negamax(depth - R, -beta, -beta + 1, ply + 1, false);
+                bd.unmakeNullMove();
+                if (stopped) return 0;
+                if (s >= beta) return beta;
+            }
         }
 
         Movelist ml;
@@ -775,7 +782,9 @@ int main() {
                  "option name LMR type spin default 0 min 0 max 1\n"
                  "option name HistMalus type spin default 1 min 0 max 1\n"
                  "option name HistLMR type spin default 0 min 0 max 1\n"
-                 "option name SEE type spin default 2 min 0 max 2\nuciok");
+                 "option name SEE type spin default 2 min 0 max 2\n"
+                 "option name NullEval type spin default 0 min 0 max 1\n"
+                 "option name NullDepth type spin default 0 min 0 max 1\nuciok");
         } else if (cmd == "isready") {
             emit("readyok");
         } else if (cmd == "ucinewgame") {
@@ -798,6 +807,8 @@ int main() {
             else if (name == "HistMalus") opts.histMalus = std::stoi(value) != 0;
             else if (name == "HistLMR") opts.histLmr = std::stoi(value) != 0;
             else if (name == "SEE") opts.see = std::min(2, std::max(0, std::stoi(value)));
+            else if (name == "NullEval") opts.nullEval = std::stoi(value) != 0;
+            else if (name == "NullDepth") opts.nullDepth = std::stoi(value) != 0;
             else if (name == "EvalFile") {
                 if (!loadNet(value)) emit("info string could not load net: " + value);
                 else emit("info string loaded NNUE with hidden size " + std::to_string(net.H));
