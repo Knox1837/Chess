@@ -13,7 +13,7 @@ neural-network evaluator trained on Lichess data, and tools to measure how stron
 - **Pure-Python fallback**: if the C++ engine has not been built, the game still works (just weaker and slower).
 - **NNUE-style network** (`train_nnue.py`): trained from the Lichess evaluation database; optional.
 - **Evaluation tools**: `evaluate_engine.py` (vs Stockfish), `match_engines.py` (one engine build or option set vs
-  another, for testing changes) and `train_nnue.py match` (network vs hand-written eval).
+  another, for testing changes), `tune_eval.py` (fits the evaluation weights) and `train_nnue.py match` (network vs hand-written eval).
 
 ## Quick start
 
@@ -146,6 +146,7 @@ engine's own score in pawns from White's point of view (`#3` = forced mate). It 
 | `HistMalus` | 1 | bounded history with a penalty for quiet moves that failed to cut, 0 = old additive history |
 | `NullEval` | 0 | only try the null move when the static eval is at or above beta |
 | `NullDepth` | 0 | null-move reduction 3 + depth/4 instead of 3 (4 above depth 6) |
+| `EvalParams` | empty | path of a weights file made by `tune_eval.py`; empty = the built-in weights (the tuned ones if `bake` was used, else the original hand-written ones); `original` = always the original hand-written weights |
 | `SEE` | 2 | static exchange evaluation: 1 = order captures by it (losing captures last), 2 = also skip losing captures in quiescence, 0 = off |
 | `LMR` | 0 | log-based late-move reduction table, 0 = the older fixed 1-2 ply reductions |
 | `HistLMR` | 0 | reduce moves with a good history score less (only has an effect with `LMR=1`) |
@@ -232,6 +233,55 @@ every game to the end. Other flags: `--level`, `--sf-time`, `--nnue`, `--ponder`
 Stockfish's time; needs spare CPU cores), `--max-plies`. Pick Elo levels close to the engine's strength,
 because a 100% or 0% score only gives a bound.
 
+## Tuning the evaluation
+
+`tune_eval.py` fits the weights of the hand-written evaluation (piece values and piece-square tables, passed,
+isolated and doubled pawns, rook files, bishop pair, king shield, tempo) to the Stockfish evaluations in the
+prepared data (`engine/data/processed/nnue` and `nnue2`, each with `bitboards.npy` and `labels.npy`). It also
+has two new terms that are off by default: piece **mobility** and **king-zone attacks** (squares near the enemy
+king attacked by knights, bishops, rooks and queens). The score is linear in the weights, so the fit is exact
+and fast and needs only NumPy. The fit starts from the engine's current weights, which it reads from the
+engine itself (`evalparams` command), and writes a text file that the engine loads through the `EvalParams`
+option. Nothing about the engine changes until you load a file.
+
+```powershell
+python tune_eval.py check                      # first: do the tuner's features match the engine's evaluation?
+python tune_eval.py tune --max-positions 3000000 --epochs 60
+python tune_eval.py tune --no-new-terms        # re-fit only the existing terms
+```
+
+It reports the loss and typical error (centipawns) on held-out positions before and after, and writes
+`engine/models/saved/eval_params.txt` only if the held-out loss improved. Test the result like any other
+change, then decide:
+
+```powershell
+python match_engines.py --a engine\bin\chess_engine.exe --b engine\bin\chess_engine.exe --a-opt EvalParams=engine\models\saved\eval_params.txt --games 300 --movetime 0.1 --concurrency 4
+```
+
+Mobility and king-zone terms cost search speed (the evaluation then needs attack maps); compare the `bench`
+nodes per second with and without the file. A better held-out loss does not guarantee a stronger engine, so the
+match result decides.
+
+Weights fitted without a limit made the engine clearly weaker (-43 and -101 Elo), even though the held-out
+error went down: large weight changes no longer fit the search's fixed margins and capture values, and the
+target (Stockfish's deep evaluations) is not what this search needs. Keeping every weight within 10 cp of
+the current one (`--max-change 10`) made the fit safe, and with mobility and king-zone terms enabled it gave
+a small gain (see the table below).
+
+### Making a tuned file the default
+
+```powershell
+python tune_eval.py bake --params engine\models\saved\p4.txt      # writes engine/cpp/eval_default.inc
+cmake --build build --config Release
+python tune_eval.py verify --params engine\models\saved\p4.txt    # engine's built-in weights == that file?
+```
+
+The weights are compiled into the engine, so the game and the evaluation scripts all use them without a path.
+The original hand-written weights stay available as `EvalParams=original`, which makes `match_engines.py`
+comparisons against the old evaluation easy (`--b-opt EvalParams=original`). To go back for good, empty the text
+in `engine/cpp/eval_default.inc` (or restore the placeholder from git) and rebuild. A later `tune` run starts
+from whatever the engine currently uses.
+
 ## Comparing engine versions
 
 Stockfish games are too noisy to tell whether a change helped. `match_engines.py` plays two engine builds, or
@@ -269,10 +319,14 @@ Results so far (300 games at 0.1 s per move unless noted; positive = the first o
 | `SEE=2` vs 0 | +139 | [+103, +178] | on by default (a 120-game test at 0.05 s gave +101) |
 | `NullEval=1` vs 0 (400 games) | +9 | [-21, +38] | off (no evidence of a gain) |
 | `NullDepth=1` vs 0 (400 games) | -5 | [-35, +25] | off (no evidence of a gain) |
+| `EvalParams`, unbounded fit, old and new terms | -43 | [-82, -6] | rejected |
+| `EvalParams`, unbounded fit, old terms only | -101 | [-142, -63] | rejected |
+| `EvalParams`, fit within 10 cp, old terms only | +7 | [-28, +42] | no evidence of a gain |
+| `EvalParams`, fit within 10 cp, with mobility and king zone (700 games pooled from 2 runs) | +18 | [-5, +42] | adopted as the default |
 | `LMR=1` alone vs the older build | -7 | [-42, +28] | off |
 | `LMR=1 HistMalus=1 HistLMR=1` vs `HistMalus=0` | +19 | [-15, +53] | worse than `HistMalus` alone, so `LMR` and `HistLMR` stay off |
 
-Ideas not done yet: aspiration windows, tuning the evaluation
+Ideas not done yet: aspiration windows, applying the tuned evaluation by default, tuning the evaluation
 weights, multi-threaded search, an opening book, a smaller or incrementally updated neural network.
 
 ## Training the neural network
@@ -329,6 +383,7 @@ Chess/
 ├── CMakeLists.txt              builds the C++ engine
 ├── evaluate_engine.py          AI vs Stockfish evaluation
 ├── match_engines.py            engine build/option set vs another (A/B testing)
+├── tune_eval.py                fits the evaluation weights to the prepared Lichess positions
 ├── train_nnue.py               prepare data / train / compare / match
 ├── controllers/                menu and game controllers
 ├── ui/                         pygame menu and board drawing
@@ -336,7 +391,7 @@ Chess/
 └── engine/
     ├── ai/chess_ai.py          ChessAI: C++ backend over UCI, pure-Python fallback
     ├── ai/chess_trainer.py     legacy trainer
-    ├── cpp/                    engine.cpp, chess.hpp
+    ├── cpp/                    engine.cpp, chess.hpp, eval_default.inc (baked evaluation weights)
     ├── bin/                    build output (not committed)
     ├── data/                   raw/ and processed/ training data (not committed)
     ├── game/                   board, rules and game state

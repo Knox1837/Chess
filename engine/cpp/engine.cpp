@@ -85,17 +85,142 @@ uint64_t ranksAhead(int rank, bool white) {
     return m;
 }
 
+// Evaluation weights. The defaults reproduce the original hand-written evaluation exactly; tune_eval.py can
+// fit new ones and the EvalParams option loads them from a text file. [0] = middlegame, [1] = endgame.
+struct EvalParams {
+    int pst[2][7][64];            // piece value + piece-square table, indexed like MG_PST (a8 first, White's view)
+    int passed[2][8];             // passed pawn bonus by relative rank
+    int iso[2], dbl[2], rookOpen[2], rookSemi[2], bpair[2], shield[2];
+    int tempo;
+    int mob[2][4], kz[2][4];      // knight, bishop, rook, queen: mobility area / attacks on the enemy king zone
+    bool dynamic;                 // any mobility or king-zone weight is non-zero (needs attack maps)
+};
+EvalParams EP;
+EvalParams BUILTIN;      // the weights used when EvalParams is empty: the baked tuned weights if any, else the originals
+
+// Tuned weights written by `python tune_eval.py bake` (empty = keep the original hand-written weights)
+#include "eval_default.inc"
+
+void finalizeParams(EvalParams& p) {
+    p.dynamic = false;
+    for (int ph = 0; ph < 2; ++ph)
+        for (int t = 0; t < 4; ++t)
+            if (p.mob[ph][t] || p.kz[ph][t]) p.dynamic = true;
+}
+
+void setDefaultParams(EvalParams& p) {
+    std::memset(&p, 0, sizeof(p));
+    for (int pt = 1; pt <= 6; ++pt)
+        for (int i = 0; i < 64; ++i) {
+            p.pst[0][pt][i] = MG_VALUE[pt] + MG_PST[pt][i];
+            p.pst[1][pt][i] = EG_VALUE[pt] + EG_PST[pt][i];
+        }
+    for (int r = 0; r < 8; ++r) { p.passed[0][r] = PASSED_MG[r]; p.passed[1][r] = PASSED_EG[r]; }
+    p.iso[0] = -10;      p.iso[1] = -15;
+    p.dbl[0] = -12;      p.dbl[1] = -20;
+    p.rookOpen[0] = 20;  p.rookOpen[1] = 10;
+    p.rookSemi[0] = 10;  p.rookSemi[1] = 5;
+    p.bpair[0] = 30;     p.bpair[1] = 50;
+    p.shield[0] = 9;     p.shield[1] = 0;
+    p.tempo = 10;
+    finalizeParams(p);
+}
+
+void rebuildTables() {
+    for (int pt = 1; pt <= 6; ++pt)
+        for (int sq = 0; sq < 64; ++sq) {
+            MGT[0][pt][sq] = EP.pst[0][pt][sq ^ 56];
+            EGT[0][pt][sq] = EP.pst[1][pt][sq ^ 56];
+            MGT[1][pt][sq] = EP.pst[0][pt][sq];
+            EGT[1][pt][sq] = EP.pst[1][pt][sq];
+        }
+}
+
+std::string dumpParams(const EvalParams& p) {
+    std::ostringstream o;
+    o << "version 1\n";
+    for (int ph = 0; ph < 2; ++ph)
+        for (int pt = 1; pt <= 6; ++pt) {
+            o << (ph ? "pst_eg " : "pst_mg ") << pt;
+            for (int i = 0; i < 64; ++i) o << ' ' << p.pst[ph][pt][i];
+            o << '\n';
+        }
+    auto line = [&](const char* name, const int* v, int n) {
+        o << name;
+        for (int i = 0; i < n; ++i) o << ' ' << v[i];
+        o << '\n';
+    };
+    line("passed_mg", p.passed[0], 8);  line("passed_eg", p.passed[1], 8);
+    line("isolated", p.iso, 2);         line("doubled", p.dbl, 2);
+    line("rook_open", p.rookOpen, 2);   line("rook_semi", p.rookSemi, 2);
+    line("bishop_pair", p.bpair, 2);    line("shield", p.shield, 2);
+    line("tempo", &p.tempo, 1);
+    line("mob_mg", p.mob[0], 4);        line("mob_eg", p.mob[1], 4);
+    line("kz_mg", p.kz[0], 4);          line("kz_eg", p.kz[1], 4);
+    return o.str();
+}
+
+// Parses a parameter file (format of dumpParams) on top of the values already in p. Unknown keys are ignored.
+bool parseParams(std::istream& f, EvalParams& p, std::string& err) {
+    std::string line;
+    while (std::getline(f, line)) {
+        std::istringstream is(line);
+        std::string key;
+        if (!(is >> key) || key[0] == '#') continue;
+        auto rd = [&](int* dst, int n) {
+            for (int i = 0; i < n; ++i)
+                if (!(is >> dst[i])) return false;
+            return true;
+        };
+        bool ok = true;
+        if (key == "pst_mg" || key == "pst_eg") {
+            int pt = 0;
+            if (!(is >> pt) || pt < 1 || pt > 6) ok = false;
+            else ok = rd(p.pst[key == "pst_eg" ? 1 : 0][pt], 64);
+        }
+        else if (key == "passed_mg") ok = rd(p.passed[0], 8);
+        else if (key == "passed_eg") ok = rd(p.passed[1], 8);
+        else if (key == "isolated") ok = rd(p.iso, 2);
+        else if (key == "doubled") ok = rd(p.dbl, 2);
+        else if (key == "rook_open") ok = rd(p.rookOpen, 2);
+        else if (key == "rook_semi") ok = rd(p.rookSemi, 2);
+        else if (key == "bishop_pair") ok = rd(p.bpair, 2);
+        else if (key == "shield") ok = rd(p.shield, 2);
+        else if (key == "tempo") ok = rd(&p.tempo, 1);
+        else if (key == "mob_mg") ok = rd(p.mob[0], 4);
+        else if (key == "mob_eg") ok = rd(p.mob[1], 4);
+        else if (key == "kz_mg") ok = rd(p.kz[0], 4);
+        else if (key == "kz_eg") ok = rd(p.kz[1], 4);
+        if (!ok) { err = "bad line: " + key; return false; }
+    }
+    finalizeParams(p);
+    return true;
+}
+
+bool loadParams(const std::string& path, std::string& err) {
+    std::ifstream f(path);
+    if (!f) { err = "cannot open file"; return false; }
+    EvalParams p;
+    setDefaultParams(p);
+    if (!parseParams(f, p, err)) return false;
+    EP = p;
+    rebuildTables();
+    return true;
+}
+
 void initEval() {
     for (int f = 0; f < 8; ++f) FILE_BB[f] = 0x0101010101010101ULL << f;
     for (int f = 0; f < 8; ++f)
         ADJ_FILES[f] = (f > 0 ? FILE_BB[f - 1] : 0) | (f < 7 ? FILE_BB[f + 1] : 0);
-    for (int pt = 1; pt <= 6; ++pt)
-        for (int sq = 0; sq < 64; ++sq) {
-            MGT[0][pt][sq] = MG_VALUE[pt] + MG_PST[pt][sq ^ 56];
-            EGT[0][pt][sq] = EG_VALUE[pt] + EG_PST[pt][sq ^ 56];
-            MGT[1][pt][sq] = MG_VALUE[pt] + MG_PST[pt][sq];
-            EGT[1][pt][sq] = EG_VALUE[pt] + EG_PST[pt][sq];
-        }
+    setDefaultParams(BUILTIN);
+    if (BAKED_EVAL_PARAMS[0]) {
+        std::istringstream baked(BAKED_EVAL_PARAMS);
+        std::string err;
+        EvalParams p = BUILTIN;
+        if (parseParams(baked, p, err)) BUILTIN = p;
+    }
+    EP = BUILTIN;
+    rebuildTables();
     for (int sq = 0; sq < 64; ++sq) {
         int f = sq & 7, r = sq >> 3;
         for (int ci = 0; ci < 2; ++ci) {
@@ -139,27 +264,65 @@ int evalHand(const Board& bd) {
                 if (pt == 1) {
                     int r = ci == 0 ? (sq >> 3) : 7 - (sq >> 3);
                     int f = sq & 7;
-                    if (!(oppp & PASSED_MASK[ci][sq])) { m += PASSED_MG[r]; e += PASSED_EG[r]; }
-                    if (!(ownp & ADJ_FILES[f])) { m -= 10; e -= 15; }
-                    if (ownp & FRONT_SAME[ci][sq]) { m -= 12; e -= 20; }
+                    if (!(oppp & PASSED_MASK[ci][sq])) { m += EP.passed[0][r]; e += EP.passed[1][r]; }
+                    if (!(ownp & ADJ_FILES[f])) { m += EP.iso[0]; e += EP.iso[1]; }
+                    if (ownp & FRONT_SAME[ci][sq]) { m += EP.dbl[0]; e += EP.dbl[1]; }
                 } else if (pt == 4) {
                     uint64_t fm = FILE_BB[sq & 7];
                     if (!(ownp & fm)) {
-                        if (!(oppp & fm)) { m += 20; e += 10; }
-                        else              { m += 10; e += 5; }
+                        if (!(oppp & fm)) { m += EP.rookOpen[0]; e += EP.rookOpen[1]; }
+                        else              { m += EP.rookSemi[0]; e += EP.rookSemi[1]; }
                     }
                 }
             }
-            if (pt == 3 && popcnt(bb) >= 2) { m += 30; e += 50; }
-            else if (pt == 6) m += 9 * popcnt(ownp & SHIELD[ci][ctz(bb)]);
+            if (pt == 3 && popcnt(bb) >= 2) { m += EP.bpair[0]; e += EP.bpair[1]; }
+            else if (pt == 6) {
+                const int cnt = popcnt(ownp & SHIELD[ci][ctz(bb)]);
+                m += EP.shield[0] * cnt;
+                e += EP.shield[1] * cnt;
+            }
         }
         mg[ci] = m;
         eg[ci] = e;
     }
+    if (EP.dynamic) {
+        // Mobility and king-zone terms from the union of squares each piece type attacks
+        const uint64_t occ = bd.occ().getBits();
+        const Bitboard occBB(occ);
+        uint64_t att[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}}, zone[2] = {0, 0}, kingbb[2] = {0, 0}, area[2], pa[2];
+        pa[0] = ((pawns[0] << 9) & ~FILE_BB[0]) | ((pawns[0] << 7) & ~FILE_BB[7]);
+        pa[1] = ((pawns[1] >> 7) & ~FILE_BB[0]) | ((pawns[1] >> 9) & ~FILE_BB[7]);
+        for (int ci = 0; ci < 2; ++ci) {
+            const Color color = ci == 0 ? Color::WHITE : Color::BLACK;
+            kingbb[ci] = bd.pieces(PieceType::KING, color).getBits();
+            for (int t = 0; t < 4; ++t) {
+                uint64_t bb = bd.pieces(PTS[t + 1], color).getBits();
+                uint64_t a = 0;
+                while (bb) {
+                    const Square sq(ctz(bb));
+                    bb &= bb - 1;
+                    a |= t == 0 ? attacks::knight(sq).getBits()
+                       : t == 1 ? attacks::bishop(sq, occBB).getBits()
+                       : t == 2 ? attacks::rook(sq, occBB).getBits()
+                                : attacks::queen(sq, occBB).getBits();
+                }
+                att[ci][t] = a;
+            }
+            if (kingbb[ci]) zone[ci] = attacks::king(Square(ctz(kingbb[ci]))).getBits() | kingbb[ci];
+        }
+        for (int ci = 0; ci < 2; ++ci) area[ci] = ~(pawns[ci] | kingbb[ci]) & ~pa[1 - ci];
+        for (int ci = 0; ci < 2; ++ci)
+            for (int t = 0; t < 4; ++t) {
+                const int mob = popcnt(att[ci][t] & area[ci]);
+                const int kza = popcnt(att[ci][t] & zone[1 - ci]);
+                mg[ci] += EP.mob[0][t] * mob + EP.kz[0][t] * kza;
+                eg[ci] += EP.mob[1][t] * mob + EP.kz[1][t] * kza;
+            }
+    }
     if (phase > 24) phase = 24;
     int mgs = mg[0] - mg[1], egs = eg[0] - eg[1];
     int score = (mgs * phase + egs * (24 - phase)) / 24;   // truncates toward 0, like the Python int()
-    return bd.sideToMove() == Color::WHITE ? score + 10 : -score + 10;
+    return bd.sideToMove() == Color::WHITE ? score + EP.tempo : -score + EP.tempo;
 }
 
 //  NNUE (v2: king-bucketed, both perspectives) - weights from nnue.bin written by Python
@@ -774,6 +937,7 @@ int main() {
                  "option name Hash type spin default 64 min 1 max 4096\n"
                  "option name UseNNUE type check default true\n"
                  "option name EvalFile type string default <empty>\n"
+                 "option name EvalParams type string default <empty>\n"
                  "option name Noise type spin default 0 min 0 max 1000\n"
                  "option name SoftTime type spin default 75 min 20 max 100\n"
                  "option name RFP type spin default 80 min 0 max 400\n"
@@ -809,7 +973,14 @@ int main() {
             else if (name == "SEE") opts.see = std::min(2, std::max(0, std::stoi(value)));
             else if (name == "NullEval") opts.nullEval = std::stoi(value) != 0;
             else if (name == "NullDepth") opts.nullDepth = std::stoi(value) != 0;
-            else if (name == "EvalFile") {
+            else if (name == "EvalParams") {
+                if (value.empty() || value == "<empty>") { EP = BUILTIN; rebuildTables(); }
+                else if (value == "original") { setDefaultParams(EP); rebuildTables(); }
+                else {
+                    std::string err;
+                    if (!loadParams(value, err)) emit("info string could not load eval params: " + value + " (" + err + ")");
+                }
+            } else if (name == "EvalFile") {
                 if (!loadNet(value)) emit("info string could not load net: " + value);
                 else emit("info string loaded NNUE with hidden size " + std::to_string(net.H));
             }
@@ -842,6 +1013,8 @@ int main() {
         } else if (cmd == "stop") {
             stopFlag = true;
             joinSearch();
+        } else if (cmd == "evalparams") {
+            emit(dumpParams(EP) + "end");
         } else if (cmd == "eval") {
             emit("eval hand " + std::to_string(evalHand(gameBoard)) + " nnue " +
                  std::to_string(net.ok ? evalNet(gameBoard) : 0));

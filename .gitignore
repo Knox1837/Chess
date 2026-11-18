@@ -12,3 +12,6 @@ build/
 engine/bin/
 engine/data/raw/
 engine/models/saved/nnue.bin
+# evaluation-tuning experiments (the adopted weights are baked into engine/cpp/eval_default.inc)
+engine/models/saved/eval_params*.txt
+engine/models/saved/p[0-9]*.txt
