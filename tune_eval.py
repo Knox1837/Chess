@@ -1,11 +1,6 @@
 """
 Tune the chess engine's hand-written evaluation on the prepared Lichess positions (NumPy only, no PyTorch).
 
-The engine's evaluation is a weighted sum of features (piece-square values, pawn structure, rook files, bishop
-pair, king shield and, new, mobility and king-zone attacks), blended by game phase. For a fixed position the score
-is linear in the weights, so they can be fitted directly to the Stockfish evaluations in the data. The fit starts
-from the engine's current weights and writes a parameter file the engine can load with the EvalParams option.
-
   python tune_eval.py check                       # features match the engine's own evaluation? (run this first)
   python tune_eval.py tune                        # fit and write engine/models/saved/eval_params.txt
   python tune_eval.py tune --max-positions 3000000 --epochs 60
@@ -16,8 +11,7 @@ from the engine's current weights and writes a parameter file the engine can loa
   python tune_eval.py verify --params engine\\models\\saved\\p4.txt # after rebuilding: engine defaults == that file?
 
 Test the result with, for example:
-  python match_engines.py --a engine\\bin\\chess_engine.exe --b engine\\bin\\chess_engine.exe ^
-      --a-opt EvalParams=engine\\models\\saved\\eval_params.txt --games 300 --movetime 0.1 --concurrency 4
+  python match_engines.py --a engine\\bin\\chess_engine.exe --b engine\\bin\\chess_engine.exe ^ --a-opt EvalParams=engine\\models\\saved\\eval_params.txt --games 300 --movetime 0.1 --concurrency 4
 """
 import argparse
 import random
@@ -51,19 +45,16 @@ FILE_B = FILE_A << U(1)
 FILE_G = FILE_A << U(6)
 FILE_H = FILE_A << U(7)
 
-
-# ---------------------------------------------------------------- engine parameter files
+# engine parameter files
 def find_engine(path=None):
     for cand in ([path] if path else []) + ["engine/bin/chess_engine.exe", "engine/bin/chess_engine"]:
         if cand and Path(cand).is_file():
             return str(cand)
     sys.exit("Engine not found. Build it first (cmake) or pass --engine.")
 
-
 def run_engine(exe, commands):
     out = subprocess.run([exe], input="\n".join(commands) + "\nquit\n", capture_output=True, text=True, timeout=600)
     return out.stdout
-
 
 def parse_params(text):
     d = {}
@@ -76,7 +67,6 @@ def parse_params(text):
         else:
             d[parts[0]] = [int(v) for v in parts[1:]]
     return d
-
 
 def to_vectors(d):
     """Parameter dict -> (mg weights, eg weights, tempo) in feature order."""
@@ -94,7 +84,6 @@ def to_vectors(d):
     mg.extend(d["kz_mg"])
     eg.extend(d["kz_eg"])
     return np.array(mg, np.float64), np.array(eg, np.float64), float(d["tempo"][0])
-
 
 def write_params(base, mg, eg, tempo, path):
     """Write a parameter file: `base` (dict) supplies everything the tuner does not change."""
@@ -121,8 +110,7 @@ def write_params(base, mg, eg, tempo, path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text("\n".join(lines) + "\n")
 
-
-# ---------------------------------------------------------------- features
+# features
 def _masks():
     pm_w, pm_b, sh_w, sh_b = (np.zeros((64, 64), np.float32) for _ in range(4))
     for sq in range(64):
@@ -140,28 +128,22 @@ def _masks():
                     sh_b[sq, t] = 1
     return pm_w, pm_b, sh_w, sh_b
 
-
 PM_W, PM_B, SH_W, SH_B = _masks()
 PERM56 = np.arange(64) ^ 56
-
 
 def unpack(x):
     """uint64 array (...) -> uint8 array (..., 64); element [..., sq] is bit sq (a1 = 0)."""
     x = np.ascontiguousarray(x)
     return np.unpackbits(x.view(np.uint8).reshape(x.shape + (8,)), axis=-1, bitorder="little")
 
-
 def popcount(x):
     return unpack(x).sum(axis=-1, dtype=np.int32)
-
 
 def _shl(x, n):
     return np.left_shift(x, U(n))
 
-
 def _shr(x, n):
     return np.right_shift(x, U(n))
-
 
 # (left?, shift, mask applied after the shift) for the 8 sliding directions
 DIRS = {
@@ -173,12 +155,10 @@ DIRS = {
 ROOK_DIRS = ("N", "S", "E", "W")
 BISHOP_DIRS = ("NE", "NW", "SE", "SW")
 
-
 def _step(x, d):
     left, n, mask = DIRS[d]
     y = _shl(x, n) if left else _shr(x, n)
     return y if mask is None else y & mask
-
 
 def sliding(gen, empty, dirs):
     """Squares attacked by sliders in `gen` (blockers included), union over all the pieces."""
@@ -191,19 +171,16 @@ def sliding(gen, empty, dirs):
             cur = cur & empty
     return att
 
-
 def knight_attacks(x):
     return ((_shl(x, 17) & ~FILE_A) | (_shl(x, 15) & ~FILE_H) | (_shl(x, 10) & ~(FILE_A | FILE_B)) |
             (_shl(x, 6) & ~(FILE_G | FILE_H)) | (_shr(x, 17) & ~FILE_H) | (_shr(x, 15) & ~FILE_A) |
             (_shr(x, 10) & ~(FILE_G | FILE_H)) | (_shr(x, 6) & ~(FILE_A | FILE_B)))
-
 
 def king_attacks(x):
     out = np.zeros_like(x)
     for d in DIRS:
         out |= _step(x, d)
     return out
-
 
 def features(bb):
     """bb: (n, 12) uint64 planes in the mover's frame (own P N B R Q K, then the opponent's, own side moves up).
@@ -265,18 +242,15 @@ def features(bb):
     phase = sum(PHASE_INC[pt] * (counts[:, pt] + counts[:, pt + 6]) for pt in range(6))
     return X, np.minimum(phase, 24).astype(np.int8)
 
-
 def predict(X, phase, mg, eg, tempo):
     pm = (phase.astype(np.float32) / 24.0)
     Xf = X.astype(np.float32)
     return (Xf @ mg.astype(np.float32)) * pm + (Xf @ eg.astype(np.float32)) * (1.0 - pm) + tempo
 
-
 def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-np.clip(x, -60, 60)))
 
-
-# ---------------------------------------------------------------- check
+# check
 def random_boards(n, seed):
     import chess
     rng = random.Random(seed)
@@ -291,7 +265,6 @@ def random_boards(n, seed):
         if not b.is_game_over() and not b.is_check():
             boards.append(b)
     return boards
-
 
 def cmd_check(a):
     """Compare the NumPy features with the engine's own evaluation on random positions (both sides to move)."""
@@ -325,8 +298,7 @@ def cmd_check(a):
     print("OK: features match the engine." if ok else "MISMATCH: do not tune until this is fixed.")
     sys.exit(0 if ok else 1)
 
-
-# ---------------------------------------------------------------- tune
+# tune
 def load_data(dirs, max_positions, seed):
     bbs, labs = [], []
     for d in dirs:
@@ -349,7 +321,6 @@ def load_data(dirs, max_positions, seed):
         out_y.append(np.asarray(labs[i][sel], dtype=np.float32))
     return np.concatenate(out_bb), np.concatenate(out_y)
 
-
 def build_features(bb, chunk=40000):
     Xs, ps = [], []
     t0 = time.time()
@@ -362,12 +333,10 @@ def build_features(bb, chunk=40000):
     print()
     return np.concatenate(Xs), np.concatenate(ps)
 
-
 def metrics(X, phase, y, mg, eg, tempo):
     pred = predict(X, phase, mg, eg, tempo)
     loss = float(np.mean((sigmoid(pred / SCALE) - sigmoid(y / SCALE)) ** 2))
     return loss, float(np.mean(np.abs(pred - y)))
-
 
 def cmd_tune(a):
     exe = find_engine(a.engine)
@@ -458,11 +427,9 @@ def cmd_tune(a):
     print(f"  tempo        {tempo0:.0f} -> {tempo:.0f}")
     print("\nTest it with match_engines.py using --a-opt EvalParams=<that file> before trusting it.")
 
-
 BAKE_FILE = "engine/cpp/eval_default.inc"
 REQUIRED = ["passed_mg", "passed_eg", "isolated", "doubled", "rook_open", "rook_semi", "bishop_pair", "shield",
             "tempo", "mob_mg", "mob_eg", "kz_mg", "kz_eg"]
-
 
 def cmd_bake(a):
     text = Path(a.params).read_text()
@@ -479,7 +446,6 @@ def cmd_bake(a):
     print("Afterwards check it:        python tune_eval.py verify --params " + a.params)
     print("The old weights stay available with the UCI option EvalParams=original.")
 
-
 def cmd_verify(a):
     exe = find_engine(a.engine)
     eng = parse_params(run_engine(exe, ["evalparams"]))
@@ -489,7 +455,6 @@ def cmd_verify(a):
         print(f"Engine defaults differ from {a.params} in: {bad[:5]}. Did you rebuild after `bake`?")
         sys.exit(1)
     print(f"OK: the engine's built-in weights equal {a.params}.")
-
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -533,7 +498,6 @@ def main():
 
     a = ap.parse_args()
     a.fn(a)
-
 
 if __name__ == "__main__":
     main()

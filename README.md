@@ -6,7 +6,9 @@ neural-network evaluator trained on Lichess data, and tools to measure how stron
 - **Play** against the AI, against a friend, or against Stockfish.
 - **C++ engine** (`engine/cpp/`): millions of nodes per second, searches 10+ plies in well under a second.
 - **Thinks on your time:** in the strong setting the engine keeps searching while you choose your move (pondering).
-- **Strength:** roughly **2550-2600** against Stockfish limited to a given Elo, at 0.1 s per move
+- **Multi-threaded search and an opening book:** in the strong setting the engine searches with several threads
+  (a quarter of your logical CPUs by default) and plays its first moves from an opening book.
+- **Strength:** roughly **2600-2650** against Stockfish limited to a given Elo, at 0.1 s per move
   (benchmark games against Stockfish, see [Strength](#strength)). Search improvements since the first
   measurements gained much more in head-to-head matches (see [Comparing engine versions](#comparing-engine-versions))
   than they show against Stockfish.
@@ -147,6 +149,8 @@ engine's own score in pawns from White's point of view (`#3` = forced mate). It 
 | `NullEval` | 0 | only try the null move when the static eval is at or above beta |
 | `NullDepth` | 0 | null-move reduction 3 + depth/4 instead of 3 (4 above depth 6) |
 | `EvalParams` | empty | path of a weights file made by `tune_eval.py`; empty = the built-in weights (the tuned ones if `bake` was used, else the original hand-written ones); `original` = always the original hand-written weights |
+| `Aspiration` | 25 | root aspiration window half-width in cp from depth 5, 0 = full window |
+| `Threads` | 1 | search threads (Lazy SMP); the game sets this itself for the strong setting |
 | `SEE` | 2 | static exchange evaluation: 1 = order captures by it (losing captures last), 2 = also skip losing captures in quiescence, 0 = off |
 | `LMR` | 0 | log-based late-move reduction table, 0 = the older fixed 1-2 ply reductions |
 | `HistLMR` | 0 | reduce moves with a good history score less (only has an effect with `LMR=1`) |
@@ -158,7 +162,7 @@ used to check that.
 
 ## Strength
 
-**Current estimate: roughly 2550-2600 against Stockfish limited to a given Elo**, with the engine at
+**Current estimate: roughly 2600-2650 against Stockfish limited to a given Elo** (single-threaded), with the engine at
 skill level 4 and both sides playing 0.1 s per move. This comes from benchmark games against Stockfish
 (`evaluate_engine.py`), not from a rating list or games against people, so use it to compare versions
 of this engine rather than as an official rating.
@@ -192,6 +196,8 @@ After the pruning, history-penalty and SEE changes (100 games per level, 3 games
 | 2600 and 2800 | overall estimate | ~2544 |
 | 2800 | 7W 17D 76L (16%) | ~2505 |
 | 2800 and 3000 | overall estimate | ~2586 |
+| 2800 and 3000, after the tuned evaluation | overall estimate | ~2657 |
+| 3000 only, 4 search threads (50 games) | overall estimate | ~2670 |
 | 3000 | 0W 17D 83L (8%) | ~2587 |
 
 The same build therefore reads about 2500-2590 depending on the level and the run. The head-to-head tests show
@@ -232,6 +238,38 @@ decided (Stockfish's own score beyond +-10 pawns for 4 moves in a row) are stopp
 every game to the end. Other flags: `--level`, `--sf-time`, `--nnue`, `--ponder` (let the AI think on
 Stockfish's time; needs spare CPU cores), `--max-plies`. Pick Elo levels close to the engine's strength,
 because a 100% or 0% score only gives a bound.
+
+## Multi-threaded search
+
+With `Threads` above 1 the engine runs Lazy SMP: helper threads search the same position with different depth
+patterns and share one lock-free transposition table, and the main thread picks the move. The game uses
+`default_threads()` in `engine/ai/chess_ai.py` (a quarter of the logical CPUs, at most 8; 4 on an 8-core /
+16-thread laptop). Set the environment variable `CHESS_THREADS` to change it, for example
+`$env:CHESS_THREADS = 6` in PowerShell before `python main.py`. The evaluation scripts stay single-threaded
+unless asked: `evaluate_engine.py --threads 4` (use a low `--concurrency`, since every game then runs several
+threads).
+
+Test it against the single-threaded engine; each game now uses `Threads + 1` threads, so keep `--concurrency`
+at about a quarter of your logical CPUs:
+
+```powershell
+python match_engines.py --a engine\bin\chess_engine.exe --b engine\bin\chess_engine.exe --a-opt Threads=4 --games 200 --movetime 0.1 --concurrency 2
+```
+
+## Opening book
+
+In the strong setting the first 12 moves come from `engine/data/book.bin` when the position is in it (the
+status shows "book"), picked at random in proportion to how often each move occurs in the book. The book is a
+standard Polyglot file. `engine/data/opening_lines.txt` lists about 50 well-known lines in SAN; add your own and
+rebuild:
+
+```powershell
+python build_book.py                                   # opening_lines.txt -> engine/data/book.bin
+python build_book.py --pgn games.pgn --min-elo 2300    # also learn from strong games (PGN)
+```
+
+Every move is checked for legality while the book is built. Any other Polyglot `.bin` book can be used by
+copying it to `engine/data/book.bin`. The evaluation scripts and `match_engines.py` do not use the book.
 
 ## Tuning the evaluation
 
@@ -323,11 +361,14 @@ Results so far (300 games at 0.1 s per move unless noted; positive = the first o
 | `EvalParams`, unbounded fit, old terms only | -101 | [-142, -63] | rejected |
 | `EvalParams`, fit within 10 cp, old terms only | +7 | [-28, +42] | no evidence of a gain |
 | `EvalParams`, fit within 10 cp, with mobility and king zone (700 games pooled from 2 runs) | +18 | [-5, +42] | adopted as the default |
+| new build (lockless table, options off) vs the previous build | +23 | [-20, +66] | no change expected; the search is node-for-node identical, so this is noise |
+| `Aspiration=25` vs 0 | +33 | [+4, +63] | on by default (a 120-game test at 0.05 s gave +32) |
+| `Threads=4` vs 1 (200 games, 2 games at once) | +106 | [+62, +153] | the game uses several threads in the strong setting |
 | `LMR=1` alone vs the older build | -7 | [-42, +28] | off |
 | `LMR=1 HistMalus=1 HistLMR=1` vs `HistMalus=0` | +19 | [-15, +53] | worse than `HistMalus` alone, so `LMR` and `HistLMR` stay off |
 
-Ideas not done yet: aspiration windows, applying the tuned evaluation by default, tuning the evaluation
-weights, multi-threaded search, an opening book, a smaller or incrementally updated neural network.
+Ideas not done yet: tuning the search margins after the evaluation change, endgame tablebases, a smaller or
+incrementally updated neural network.
 
 ## Training the neural network
 
@@ -384,16 +425,18 @@ Chess/
 ├── evaluate_engine.py          AI vs Stockfish evaluation
 ├── match_engines.py            engine build/option set vs another (A/B testing)
 ├── tune_eval.py                fits the evaluation weights to the prepared Lichess positions
+├── build_book.py               builds the opening book (Polyglot) from opening lines or PGN games
 ├── train_nnue.py               prepare data / train / compare / match
 ├── controllers/                menu and game controllers
 ├── ui/                         pygame menu and board drawing
 ├── utils/config.py             settings
 └── engine/
-    ├── ai/chess_ai.py          ChessAI: C++ backend over UCI, pure-Python fallback
+    ├── ai/chess_ai.py          ChessAI: C++ backend over UCI, pure-Python fallback, book and thread support
+    ├── ai/opening_book.py      Polyglot opening book reader
     ├── ai/chess_trainer.py     legacy trainer
     ├── cpp/                    engine.cpp, chess.hpp, eval_default.inc (baked evaluation weights)
     ├── bin/                    build output (not committed)
-    ├── data/                   raw/ and processed/ training data (not committed)
+    ├── data/                   book.bin and opening_lines.txt; raw/ and processed/ training data (not committed)
     ├── game/                   board, rules and game state
     └── models/                 nnue.py, chess_net.py (legacy), saved/ (trained networks)
 ```
