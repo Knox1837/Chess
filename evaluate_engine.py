@@ -71,7 +71,7 @@ def play_game(ai, sf, sf_time, ai_white, opening_seed, max_plies, resign=True):
 
 def run_game(a, sf_path, elo, g):
     """One game with its own AI and Stockfish process (so several can run at once)"""
-    ai = ChessAI(skill_level=a.level, use_nnue=a.nnue, time_limit=a.movetime, ponder=a.ponder)
+    ai = ChessAI(skill_level=a.level, use_nnue=a.nnue, time_limit=a.movetime, ponder=a.ponder, threads=a.threads)
     sf = chess.engine.SimpleEngine.popen_uci(sf_path)
     try:
         opt = sf.options["UCI_Elo"]
@@ -106,6 +106,7 @@ def main():
     ap.add_argument("--sf-time", type=float, default=0.1, help="seconds per Stockfish move")
     ap.add_argument("--max-plies", type=int, default=300)
     ap.add_argument("--stockfish", default=None)
+    ap.add_argument("--threads", type=int, default=1, help="search threads for the AI (Lazy SMP); use with a low --concurrency")
     ap.add_argument("--concurrency", type=int, default=1, help="games played at the same time (<= free CPU cores / 2; each game uses 2 engines)")
     ap.add_argument("--no-resign", action="store_true", help="play every game to the end instead of stopping decided games early (slower)")
     a = ap.parse_args()
@@ -153,7 +154,6 @@ def main():
         print(f"Overall estimate (average of the informative levels): about {sum(estimates) / len(estimates):.0f}")
     else:
         print("Every level was won or lost completely - pick closer Elo levels (--elos) for an estimate.")
-
 
 if __name__ == "__main__":
     main()

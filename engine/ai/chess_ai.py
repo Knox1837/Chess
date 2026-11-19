@@ -14,6 +14,12 @@ import chess
 import chess.engine
 
 try:
+    from engine.ai.opening_book import OpeningBook, find_book
+except ImportError:          # the book is optional
+    OpeningBook = None
+    find_book = None
+
+try:
     from engine.models.nnue import load_nnue, find_nnue, export_bin
 except ImportError:          # runs fine without the NNUE module
     load_nnue = None
@@ -275,8 +281,19 @@ def find_cpp_engine():
             return str(d / exe)
     return None
 
+def default_threads():
+    """Search threads for real games: a quarter of the logical CPUs (at most 8). Override with CHESS_THREADS."""
+    env = os.environ.get("CHESS_THREADS", "")
+    if env.isdigit() and int(env) >= 1:
+        return int(env)
+    return max(1, min(8, (os.cpu_count() or 2) // 4))
+
+
+BOOK_MAX_MOVE = 12            # stop using the opening book after this many moves
+
+
 class ChessAI:
-    def __init__(self, model_path=None, skill_level=1, use_nnue=False, time_limit=None, nnue_blend=1.0, use_cpp=True, ponder=False, ponder_seconds=30.0):
+    def __init__(self, model_path=None, skill_level=1, use_nnue=False, time_limit=None, nnue_blend=1.0, use_cpp=True, ponder=False, ponder_seconds=30.0, threads=1, use_book=False, book_path=None):
         self.skill_level = max(1, min(5, int(skill_level)))
         self.time_limit = time_limit  # overrides the per-level time budget (seconds)
         self.model = None            # kept so old code that checks `ai.model` still works
@@ -289,6 +306,15 @@ class ChessAI:
         self.ponder_seconds = ponder_seconds  # safety cap so a forgotten game can't burn a CPU forever
         self._ponder_job = None
         self._closed = False
+        self.threads = max(1, int(threads))   # C++ engine search threads (Lazy SMP); 1 = single-threaded
+        self.book = None
+        if use_book and OpeningBook is not None:
+            path = find_book(book_path)
+            if path:
+                try:
+                    self.book = OpeningBook(path)
+                except Exception as e:
+                    print(f"AI: could not open the opening book ({e})")
         if use_cpp and nnue_blend >= 1.0:
             self._start_cpp(model_path, use_nnue)
         if self.cpp is None and use_nnue and load_nnue is not None:
@@ -340,6 +366,8 @@ class ChessAI:
         try:
             eng = chess.engine.SimpleEngine.popen_uci(exe)
             cfg = {"Hash": 64, "UseNNUE": False}
+            if self.threads > 1 and "Threads" in eng.options:
+                cfg["Threads"] = self.threads
             if use_nnue and find_nnue is not None and export_bin is not None:
                 npz = find_nnue(model_path)
                 if npz:
@@ -373,6 +401,9 @@ class ChessAI:
     def close(self):
         self._closed = True
         self._stop_ponder()
+        if self.book is not None:
+            self.book.close()
+            self.book = None
         eng, self.cpp = self.cpp, None
         if eng is not None:
             try:
@@ -696,9 +727,24 @@ class ChessAI:
         _, true_score, move = scored[0]
         return move, true_score, depth
 
+    def _book_move(self, board):
+        """A move from the opening book (instant), or None when out of book."""
+        if self.book is None or board.fullmove_number > BOOK_MAX_MOVE:
+            return None
+        move = self.book.pick(board)
+        if move is None or move not in board.legal_moves:
+            return None
+        with self._lock:
+            self._stop_ponder()
+        self.last_info = {"depth": 0, "nodes": 0, "seconds": 0.0}
+        return {"move": move, "eval": 0.0, "eval_display": "book", "move_san": board.san(move)}
+
     def choose_move(self, board):
         if self._closed:
             return None
+        booked = self._book_move(board)
+        if booked is not None:
+            return booked
         if self.cpp is not None:
             try:
                 return self._cpp_choose(board)

@@ -5,7 +5,7 @@ import chess
 import pygame
 import threading
 from engine.game.piece_movement import ChessMovement
-from engine.ai.chess_ai import ChessAI
+from engine.ai.chess_ai import ChessAI, default_threads
 from ui.game_ui import load_piece_images, draw_board, draw_pieces, draw_status, draw_highlights, draw_coordinates
 from utils.config import *
 
@@ -21,7 +21,8 @@ class ChessGame:
         self.movement = ChessMovement(self.board, SQUARE_SIZE, WIDTH, HEIGHT)
         
         # AI setup
-        self.ai = ChessAI(skill_level=4 if strong_ai else 2, ponder=strong_ai)   # strong AI thinks on your time
+        self.ai = ChessAI(skill_level=4 if strong_ai else 2, ponder=strong_ai,
+                           threads=default_threads() if strong_ai else 1, use_book=strong_ai)   # strong AI thinks on your time
         self.ai_enabled = False
         self.ai_color = not human_color          # the AI plays the side the human did not pick
         self.ai_thinking = False
