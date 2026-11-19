@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <sstream>
@@ -26,8 +27,7 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
 
-// All output goes through here: the search thread and the command loop both print, and an
-// unsynchronised std::cout can duplicate or garble lines.
+// All output goes through here: the search thread and the command loop both print, and an unsynchronised std::cout can duplicate or garble lines.
 std::mutex outMutex;
 void emit(const std::string& line) {
     std::lock_guard<std::mutex> g(outMutex);
@@ -420,6 +420,8 @@ struct Options {
     int histLmr = 0;        // reduce moves with a good history score less, poor ones more (0 = off)
     int nullEval = 0;       // only try the null move when the static eval is at or above beta (0 = off)
     int nullDepth = 0;      // null-move reduction 3 + depth/4 instead of 3 (+1 above depth 6) (0 = off)
+    int aspiration = 25;    // root aspiration window half-width in cp from depth 5 (0 = full window)
+    int threads = 1;        // search threads (Lazy SMP: helpers share the transposition table)
     int see = 2;            // static exchange evaluation: 1 = order captures by it, 2 = also skip losing captures in quiescence
 } opts;
 
@@ -437,22 +439,31 @@ inline int evaluate(const Board& bd) {
     return (opts.useNNUE && net.ok) ? evalNet(bd) : evalHand(bd);
 }
 
-// Transposition table
+// Transposition table, shared by all search threads. Each entry is two atomic words; the key is stored xor-ed with the data, so an entry torn by two threads writing at once simply fails the key check and is ignored.
 struct TTEntry {
-    uint64_t key = 0;
-    int16_t score = 0;
-    int16_t depth = 0;
-    uint8_t flag = 0;      // 0 exact, 1 lower bound, 2 upper bound
-    uint16_t move = 0;
+    std::atomic<uint64_t> key{0};
+    std::atomic<uint64_t> data{0};
 };
-std::vector<TTEntry> TT;
-size_t TT_MASK = 0;
+struct TTData { int score, depth, flag; uint16_t move; };
+inline uint64_t ttPack(int score, int depth, int flag, uint16_t move) {
+    return uint64_t(move) | (uint64_t(uint16_t(int16_t(score))) << 16) | (uint64_t(uint16_t(int16_t(depth))) << 32) |
+           (uint64_t(flag) << 48);
+}
+inline TTData ttUnpack(uint64_t d) {
+    return {int16_t(uint16_t(d >> 16)), int16_t(uint16_t(d >> 32)), int((d >> 48) & 3), uint16_t(d)};
+}
+std::unique_ptr<TTEntry[]> TT;
+size_t TT_MASK = 0, TT_COUNT = 0;
 
 void resizeTT(int mb) {
     size_t n = 1;
     while (n * 2 * sizeof(TTEntry) <= size_t(mb) * 1024 * 1024) n *= 2;
-    TT.assign(n, TTEntry());
+    TT.reset(new TTEntry[n]);
+    TT_COUNT = n;
     TT_MASK = n - 1;
+}
+void clearTT() {
+    std::memset(static_cast<void*>(TT.get()), 0, TT_COUNT * sizeof(TTEntry));   // lock-free atomics are plain words
 }
 inline int toTT(int s, int ply) { return s > MATE - 1000 ? s + ply : (s < -MATE + 1000 ? s - ply : s); }
 inline int fromTT(int s, int ply) { return s > MATE - 1000 ? s - ply : (s < -MATE + 1000 ? s + ply : s); }
@@ -651,13 +662,17 @@ class Search {
         const uint64_t key = bd.hash();
         TTEntry& e = TT[key & TT_MASK];
         Move ttMove{Move::NO_MOVE};
-        if (e.key == key) {
-            ttMove = Move(e.move);
-            if (e.depth >= depth) {
-                const int s = fromTT(e.score, ply);
-                if (e.flag == 0) return s;
-                if (e.flag == 1 && s > alpha) alpha = s;
-                else if (e.flag == 2 && s < beta) beta = s;
+        const uint64_t eKey = e.key.load(std::memory_order_relaxed);
+        const uint64_t eData = e.data.load(std::memory_order_relaxed);
+        const TTData tt = ttUnpack(eData);
+        const bool ttHit = (eKey ^ eData) == key;
+        if (ttHit) {
+            ttMove = Move(tt.move);
+            if (tt.depth >= depth) {
+                const int s = fromTT(tt.score, ply);
+                if (tt.flag == 0) return s;
+                if (tt.flag == 1 && s > alpha) alpha = s;
+                else if (tt.flag == 2 && s < beta) beta = s;
                 if (alpha >= beta) return s;
             }
         }
@@ -761,12 +776,10 @@ class Search {
         }
 
         const uint8_t flag = best <= origAlpha ? 2 : (best >= beta ? 1 : 0);
-        if (e.key != key || depth >= e.depth) {
-            e.key = key;
-            e.score = int16_t(toTT(best, ply));
-            e.depth = int16_t(depth);
-            e.flag = flag;
-            e.move = bestMove.move();
+        if (!ttHit || depth >= tt.depth) {
+            const uint64_t d = ttPack(toTT(best, ply), depth, flag, bestMove.move());
+            e.data.store(d, std::memory_order_relaxed);
+            e.key.store(key ^ d, std::memory_order_relaxed);
         }
         return best;
     }
@@ -786,38 +799,69 @@ class Search {
         emit(o.str());
     }
 
-    // Iterative deepening. softFrac: don't start a new depth after this fraction of the time.
+    int helperIdx = 0;      // 0 = main thread; Lazy SMP helpers skip some depths and print nothing
+
+    // Iterative deepening with optional aspiration windows. Don't start a new depth after softPercent of the time.
     Move iterative(const Movelist& root, int maxDepth, double seconds, bool hasTime, int& scoreOut) {
+        static const int SKIP_SIZE[20] = {1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4};
+        static const int SKIP_PHASE[20] = {0, 1, 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 6, 7};
         reset(hasTime, seconds);
         const auto t0 = Clock::now();
         Move best = root[0];
         int bestScore = 0;
         for (int depth = 1; depth <= maxDepth; ++depth) {
-            Scored mv[256];
-            const int n = orderMoves(root, mv, best, 0);
-            int alpha = -INF;
+            if (helperIdx > 0 && depth > 1) {
+                const int h = (helperIdx - 1) % 20;
+                if (((depth + SKIP_PHASE[h]) / SKIP_SIZE[h]) % 2) continue;
+            }
+            int delta = opts.aspiration;
+            int alpha0 = -INF, beta0 = INF;
+            if (delta > 0 && depth >= 5 && std::abs(bestScore) < MATE - 1000) {
+                alpha0 = bestScore - delta;
+                beta0 = bestScore + delta;
+            }
             Move itBest{Move::NO_MOVE};
             int itScore = -INF;
-            for (int i = 0; i < n; ++i) {
-                pickBest(mv, n, i);
-                const Move m = mv[i].m;
-                bd.makeMove(m);
-                int s;
-                if (i == 0) s = -negamax(depth - 1, -INF, -alpha, 1, true);
-                else {
-                    s = -negamax(depth - 1, -alpha - 1, -alpha, 1, true);
-                    if (s > alpha) s = -negamax(depth - 1, -INF, -alpha, 1, true);
+            while (true) {
+                Scored mv[256];
+                const int n = orderMoves(root, mv, best, 0);
+                int alpha = alpha0;
+                itBest = Move{Move::NO_MOVE};
+                itScore = -INF;
+                for (int i = 0; i < n; ++i) {
+                    pickBest(mv, n, i);
+                    const Move m = mv[i].m;
+                    bd.makeMove(m);
+                    int s;
+                    if (i == 0) s = -negamax(depth - 1, -beta0, -alpha, 1, true);
+                    else {
+                        s = -negamax(depth - 1, -alpha - 1, -alpha, 1, true);
+                        if (s > alpha) s = -negamax(depth - 1, -beta0, -alpha, 1, true);
+                    }
+                    bd.unmakeMove(m);
+                    if (stopped) break;
+                    if (s > itScore) { itScore = s; itBest = m; }
+                    if (s > alpha) alpha = s;
+                    if (s >= beta0) break;                       // fail high: widen and search again
                 }
-                bd.unmakeMove(m);
                 if (stopped) break;
-                if (s > itScore) { itScore = s; itBest = m; }
-                if (s > alpha) alpha = s;
+                if (alpha0 > -INF && itScore <= alpha0) {        // fail low
+                    beta0 = (alpha0 + beta0) / 2;
+                    alpha0 = std::max(-INF, alpha0 - delta);
+                    delta += delta / 2 + 5;
+                } else if (beta0 < INF && itScore >= beta0) {    // fail high
+                    beta0 = std::min(INF, beta0 + delta);
+                    delta += delta / 2 + 5;
+                } else break;
+                if (delta > 600) { alpha0 = -INF; beta0 = INF; }
             }
-            if (itBest.move() != 0) { best = itBest; bestScore = itScore; }
+            // a stopped re-search that had only failed low says nothing reliable about the best move
+            const bool trust = !(stopped && alpha0 > -INF && itScore <= alpha0);
+            if (itBest.move() != 0 && trust) { best = itBest; bestScore = itScore; }
             const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
-            if (!stopped || itBest.move() != 0) printInfo(depth, bestScore, nodes, secs, best);
+            if (helperIdx == 0 && (!stopped || itBest.move() != 0)) printInfo(depth, bestScore, nodes, secs, best);
             if (stopped || std::abs(bestScore) > MATE - 100) break;
-            if (hasTime && secs > seconds * opts.softPercent / 100.0) break;
+            if (helperIdx == 0 && hasTime && secs > seconds * opts.softPercent / 100.0) break;
         }
         scoreOut = bestScore;
         return best;
@@ -850,6 +894,8 @@ Board gameBoard;
 std::atomic<bool> stopFlag{false};
 std::thread searchThread;
 Search searcher;
+std::atomic<bool> helperStop{false};
+std::vector<std::unique_ptr<Search>> helpers;
 
 void joinSearch() {
     if (searchThread.joinable()) searchThread.join();
@@ -871,7 +917,24 @@ void doGo(Board board, int depth, double movetime, bool hasTime, int noise) {
         const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
         Search::printInfo(depth, score, searcher.nodes, secs, best);
     } else {
+        // Lazy SMP: helper threads search the same root with different depth patterns and share the table
+        const int extra = opts.threads > 1 ? opts.threads - 1 : 0;
+        std::vector<std::thread> pool;
+        helperStop = false;
+        while (int(helpers.size()) < extra) helpers.push_back(std::make_unique<Search>());
+        for (int i = 0; i < extra; ++i) {
+            Search* h = helpers[i].get();
+            h->bd = searcher.bd;
+            h->stopFlag = &helperStop;
+            h->helperIdx = i + 1;
+            pool.emplace_back([h, &root, depth, movetime, hasTime] {
+                int sc = 0;
+                h->iterative(root, depth, movetime, hasTime, sc);
+            });
+        }
         best = searcher.iterative(root, depth, movetime, hasTime, score);
+        helperStop = true;
+        for (auto& t : pool) t.join();
     }
     emit("bestmove " + uci::moveToUci(best));
 }
@@ -910,7 +973,7 @@ void bench() {
         Movelist root;
         movegen::legalmoves(root, searcher.bd);
         int sc;
-        std::fill(TT.begin(), TT.end(), TTEntry());
+        clearTT();
         searcher.iterative(root, 9, 0, false, sc);
         total += searcher.nodes;
     }
@@ -948,12 +1011,14 @@ int main() {
                  "option name HistLMR type spin default 0 min 0 max 1\n"
                  "option name SEE type spin default 2 min 0 max 2\n"
                  "option name NullEval type spin default 0 min 0 max 1\n"
-                 "option name NullDepth type spin default 0 min 0 max 1\nuciok");
+                 "option name NullDepth type spin default 0 min 0 max 1\n"
+                 "option name Aspiration type spin default 25 min 0 max 200\n"
+                 "option name Threads type spin default 1 min 1 max 64\nuciok");
         } else if (cmd == "isready") {
             emit("readyok");
         } else if (cmd == "ucinewgame") {
             joinSearch();
-            std::fill(TT.begin(), TT.end(), TTEntry());
+            clearTT();
         } else if (cmd == "setoption") {
             std::string tok, name, value;
             in >> tok;  // "name"
@@ -973,6 +1038,8 @@ int main() {
             else if (name == "SEE") opts.see = std::min(2, std::max(0, std::stoi(value)));
             else if (name == "NullEval") opts.nullEval = std::stoi(value) != 0;
             else if (name == "NullDepth") opts.nullDepth = std::stoi(value) != 0;
+            else if (name == "Aspiration") opts.aspiration = std::min(200, std::max(0, std::stoi(value)));
+            else if (name == "Threads") { joinSearch(); opts.threads = std::min(64, std::max(1, std::stoi(value))); }
             else if (name == "EvalParams") {
                 if (value.empty() || value == "<empty>") { EP = BUILTIN; rebuildTables(); }
                 else if (value == "original") { setDefaultParams(EP); rebuildTables(); }
