@@ -41,7 +41,9 @@ class ChessGame:
         self.last_move_surf.fill((255, 255, 0, 80))  # yellow, slightly transparent
     
     def _human_may_move(self):
-        """False while it is the AI's turn, so you can't move the AI's pieces"""
+        """False once the game is over, and while it is the AI's turn (so you can't move its pieces)"""
+        if self.is_game_over():
+            return False
         return not (self.ai_enabled and self.board.turn == self.ai_color)
 
     def switch_sides(self):
@@ -110,19 +112,33 @@ class ChessGame:
         
         # Draw status
         status_text = self.get_game_status()
-        draw_status(win, status_text)
+        draw_status(win, status_text, hint="R: new game    Z: undo" if self.is_game_over() else None)
     
+    def get_result(self):
+        """The game result as text if the game is over (checkmate or any kind of draw), else None"""
+        b = self.board
+        if b.is_checkmate():
+            winner = "Black" if b.turn == chess.WHITE else "White"
+            return f"Checkmate! {winner} wins!"
+        if b.is_stalemate():
+            return "Draw by stalemate"
+        if b.is_insufficient_material():
+            return "Draw: insufficient material"
+        if b.is_repetition(3):
+            return "Draw by threefold repetition"
+        if b.is_fifty_moves():
+            return "Draw by the fifty-move rule"
+        return None
+
+    def is_game_over(self):
+        return self.get_result() is not None
+
     def get_game_status(self):
         """Get current game status"""
-        if self.board.is_checkmate():
-            winner = "Black" if self.board.turn == chess.WHITE else "White"
-            return f"Checkmate! {winner} wins!"
-        elif self.board.is_stalemate():
-            return "Stalemate! Draw!"
-        elif self.board.is_check():
-            return "Check!"
-        else:
-            return ""
+        result = self.get_result()
+        if result:
+            return result
+        return "Check!" if self.board.is_check() else ""
     
     def update(self):
         """Update game state - called each frame"""
@@ -131,7 +147,7 @@ class ChessGame:
         self.valid_moves = self.movement.valid_moves
         
         # AI move if enabled
-        if (self.ai_enabled and not self.board.is_game_over() and
+        if (self.ai_enabled and not self.is_game_over() and
             self.board.turn == self.ai_color):
 
             # If a background search just finished, apply the result

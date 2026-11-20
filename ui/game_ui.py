@@ -78,13 +78,25 @@ def draw_pieces(win, board, piece_images, flipped=False):
             if key in piece_images:
                 win.blit(piece_images[key], (col * SQUARE_SIZE, row * SQUARE_SIZE))
 
-def draw_status(win, text):
-    """Draw game status"""
-    if text:
-        font = pygame.font.SysFont(None, 30)
-        text_surface = font.render(text, True, (0, 0, 0))
-        text_rect = text_surface.get_rect(center=(WIDTH//2, HEIGHT//2))
-        win.blit(text_surface, text_rect)
+def draw_status(win, text, hint=None):
+    """Draw the game status (check, checkmate, draws) on a light box in the middle of the board"""
+    if not text:
+        return
+    font = pygame.font.SysFont(None, 34)
+    text_surface = font.render(text, True, (0, 0, 0))
+    lines = [text_surface]
+    if hint:
+        lines.append(pygame.font.SysFont(None, 24).render(hint, True, (60, 60, 60)))
+    width = max(s.get_width() for s in lines) + 40
+    height = sum(s.get_height() for s in lines) + 24 + 6 * (len(lines) - 1)
+    box = pygame.Surface((width, height), pygame.SRCALPHA)
+    box.fill((255, 255, 255, 225))
+    pygame.draw.rect(box, (90, 90, 90), box.get_rect(), 2)
+    y = 12
+    for s in lines:
+        box.blit(s, ((width - s.get_width()) // 2, y))
+        y += s.get_height() + 6
+    win.blit(box, box.get_rect(center=(WIDTH // 2, HEIGHT // 2)))
 
 def draw_highlights(win, selected_square, valid_moves, square_size, flipped=False):
     """Draw square highlights for selected piece and valid moves"""
