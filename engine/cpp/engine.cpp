@@ -27,7 +27,8 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
 
-// All output goes through here: the search thread and the command loop both print, and an unsynchronised std::cout can duplicate or garble lines.
+// All output goes through here: the search thread and the command loop both print, and an
+// unsynchronised std::cout can duplicate or garble lines.
 std::mutex outMutex;
 void emit(const std::string& line) {
     std::lock_guard<std::mutex> g(outMutex);
@@ -422,6 +423,9 @@ struct Options {
     int nullDepth = 0;      // null-move reduction 3 + depth/4 instead of 3 (+1 above depth 6) (0 = off)
     int aspiration = 25;    // root aspiration window half-width in cp from depth 5 (0 = full window)
     int threads = 1;        // search threads (Lazy SMP: helpers share the transposition table)
+    int timeManage = 1;     // with a game clock: spend more time when the best move or score is unstable, less when stable
+    int timeMax = 300;      // hard limit for one move as % of the planned time (time management only)
+    int moveOverhead = 30;  // ms kept in reserve per move for communication delay
     int see = 2;            // static exchange evaluation: 1 = order captures by it, 2 = also skip losing captures in quiescence
 } opts;
 
@@ -800,6 +804,7 @@ class Search {
     }
 
     int helperIdx = 0;      // 0 = main thread; Lazy SMP helpers skip some depths and print nothing
+    double optimum = 0;     // planned time for this move in seconds when time management is on (0 = fixed time rules)
 
     // Iterative deepening with optional aspiration windows. Don't start a new depth after softPercent of the time.
     Move iterative(const Movelist& root, int maxDepth, double seconds, bool hasTime, int& scoreOut) {
@@ -809,7 +814,9 @@ class Search {
         const auto t0 = Clock::now();
         Move best = root[0];
         int bestScore = 0;
+        int lastChange = 1;             // depth at which the best move last changed (time management)
         for (int depth = 1; depth <= maxDepth; ++depth) {
+            const int prevScore = bestScore;
             if (helperIdx > 0 && depth > 1) {
                 const int h = (helperIdx - 1) % 20;
                 if (((depth + SKIP_PHASE[h]) / SKIP_SIZE[h]) % 2) continue;
@@ -857,11 +864,30 @@ class Search {
             }
             // a stopped re-search that had only failed low says nothing reliable about the best move
             const bool trust = !(stopped && alpha0 > -INF && itScore <= alpha0);
-            if (itBest.move() != 0 && trust) { best = itBest; bestScore = itScore; }
+            if (itBest.move() != 0 && trust) {
+                if (!(itBest == best)) lastChange = depth;
+                best = itBest;
+                bestScore = itScore;
+            }
             const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
             if (helperIdx == 0 && (!stopped || itBest.move() != 0)) printInfo(depth, bestScore, nodes, secs, best);
             if (stopped || std::abs(bestScore) > MATE - 100) break;
-            if (helperIdx == 0 && hasTime && secs > seconds * opts.softPercent / 100.0) break;
+            if (helperIdx == 0 && hasTime) {
+                double plan = seconds;                  // fixed rule: the time limit itself
+                if (optimum > 0) {
+                    // Planned time, scaled by how settled the search looks. Between depths we stop once the elapsed time passes softPercent of it; a depth already running may continue to the hard limit.
+                    double scale = 1.0;
+                    if (depth >= 6) {
+                        const int stable = depth - lastChange;
+                        scale = stable >= 8 ? 0.55 : stable >= 5 ? 0.70 : stable >= 3 ? 0.85 : 1.0;
+                        if (stable == 0) scale *= 1.25;                       // the best move just changed
+                        const int drop = prevScore - bestScore;
+                        if (drop > 15) scale *= 1.0 + std::min(0.6, (drop - 15) / 120.0);   // score is falling
+                    }
+                    plan = optimum * scale;
+                }
+                if (secs > plan * opts.softPercent / 100.0) break;
+            }
         }
         scoreOut = bestScore;
         return best;
@@ -901,9 +927,10 @@ void joinSearch() {
     if (searchThread.joinable()) searchThread.join();
 }
 
-void doGo(Board board, int depth, double movetime, bool hasTime, int noise) {
+void doGo(Board board, int depth, double movetime, bool hasTime, int noise, double optimum) {
     searcher.bd = board;
     searcher.stopFlag = &stopFlag;
+    searcher.optimum = optimum;
     Movelist root;
     movegen::legalmoves(root, searcher.bd);
     if (root.empty()) { emit("bestmove 0000"); return; }
@@ -1013,7 +1040,10 @@ int main() {
                  "option name NullEval type spin default 0 min 0 max 1\n"
                  "option name NullDepth type spin default 0 min 0 max 1\n"
                  "option name Aspiration type spin default 25 min 0 max 200\n"
-                 "option name Threads type spin default 1 min 1 max 64\nuciok");
+                 "option name Threads type spin default 1 min 1 max 64\n"
+                 "option name TimeManage type spin default 1 min 0 max 1\n"
+                 "option name TimeMax type spin default 300 min 100 max 1000\n"
+                 "option name MoveOverhead type spin default 30 min 0 max 5000\nuciok");
         } else if (cmd == "isready") {
             emit("readyok");
         } else if (cmd == "ucinewgame") {
@@ -1038,6 +1068,9 @@ int main() {
             else if (name == "SEE") opts.see = std::min(2, std::max(0, std::stoi(value)));
             else if (name == "NullEval") opts.nullEval = std::stoi(value) != 0;
             else if (name == "NullDepth") opts.nullDepth = std::stoi(value) != 0;
+            else if (name == "TimeManage") opts.timeManage = std::stoi(value) != 0;
+            else if (name == "TimeMax") opts.timeMax = std::min(1000, std::max(100, std::stoi(value)));
+            else if (name == "MoveOverhead") opts.moveOverhead = std::min(5000, std::max(0, std::stoi(value)));
             else if (name == "Aspiration") opts.aspiration = std::min(200, std::max(0, std::stoi(value)));
             else if (name == "Threads") { joinSearch(); opts.threads = std::min(64, std::max(1, std::stoi(value))); }
             else if (name == "EvalParams") {
@@ -1059,7 +1092,8 @@ int main() {
             int depth = 64;
             double movetime = 0;
             bool hasTime = false;
-            long wtime = -1, btime = -1, winc = 0, binc = 0;
+            long wtime = -1, btime = -1, winc = 0, binc = 0, movestogo = 0;
+            double optimum = 0;
             std::string tok;
             while (in >> tok) {
                 if (tok == "depth") in >> depth;
@@ -1068,15 +1102,25 @@ int main() {
                 else if (tok == "btime") in >> btime;
                 else if (tok == "winc") in >> winc;
                 else if (tok == "binc") in >> binc;
+                else if (tok == "movestogo") in >> movestogo;
             }
             if (!hasTime && (wtime >= 0 || btime >= 0)) {
-                long mine = gameBoard.sideToMove() == Color::WHITE ? wtime : btime;
-                long inc = gameBoard.sideToMove() == Color::WHITE ? winc : binc;
-                movetime = std::max(0.05, (mine / 30.0 + inc * 0.8) / 1000.0);
+                const long mine = gameBoard.sideToMove() == Color::WHITE ? wtime : btime;
+                const long inc = gameBoard.sideToMove() == Color::WHITE ? winc : binc;
+                const double mtg = movestogo > 0 ? std::min<long>(movestogo, 50) : 30;
+                const double avail = std::max(1.0, double(std::max(0L, mine)) - opts.moveOverhead);   // ms
+                double opt = std::min(avail / mtg + inc * 0.8, avail * 0.4);                          // planned ms
+                opt = std::max(opt, 5.0);
+                if (opts.timeManage) {
+                    optimum = opt / 1000.0;
+                    movetime = std::max(optimum, std::min(avail * 0.5, opt * opts.timeMax / 100.0) / 1000.0);   // hard limit
+                } else {
+                    movetime = opt / 1000.0;
+                }
                 hasTime = true;
             }
             stopFlag = false;
-            searchThread = std::thread(doGo, gameBoard, depth, movetime, hasTime, opts.noise);
+            searchThread = std::thread(doGo, gameBoard, depth, movetime, hasTime, opts.noise, optimum);
         } else if (cmd == "stop") {
             stopFlag = true;
             joinSearch();

@@ -291,9 +291,8 @@ def default_threads():
 
 BOOK_MAX_MOVE = 12            # stop using the opening book after this many moves
 
-
 class ChessAI:
-    def __init__(self, model_path=None, skill_level=1, use_nnue=False, time_limit=None, nnue_blend=1.0, use_cpp=True, ponder=False, ponder_seconds=30.0, threads=1, use_book=False, book_path=None):
+    def __init__(self, model_path=None, skill_level=1, use_nnue=False, time_limit=None, nnue_blend=1.0, use_cpp=True, ponder=False, ponder_seconds=30.0, threads=1, use_book=False, book_path=None, time_manage=False):
         self.skill_level = max(1, min(5, int(skill_level)))
         self.time_limit = time_limit  # overrides the per-level time budget (seconds)
         self.model = None            # kept so old code that checks `ai.model` still works
@@ -307,6 +306,7 @@ class ChessAI:
         self._ponder_job = None
         self._closed = False
         self.threads = max(1, int(threads))   # C++ engine search threads (Lazy SMP); 1 = single-threaded
+        self.time_manage = bool(time_manage)  # the per-level time is a target: use less when the move is clear, more when not
         self.book = None
         if use_book and OpeningBook is not None:
             path = find_book(book_path)
@@ -368,6 +368,8 @@ class ChessAI:
             cfg = {"Hash": 64, "UseNNUE": False}
             if self.threads > 1 and "Threads" in eng.options:
                 cfg["Threads"] = self.threads
+            if self.time_manage and "TimeManage" in eng.options:
+                cfg["TimeManage"] = 1
             if use_nnue and find_nnue is not None and export_bin is not None:
                 npz = find_nnue(model_path)
                 if npz:
@@ -445,8 +447,13 @@ class ChessAI:
                 depth, secs, sigma = 3, None, 18
             self.cpp.configure({"Noise": sigma})
             t0 = time.perf_counter()
-            res = self.cpp.play(board, chess.engine.Limit(depth=depth, time=secs),
-                                game=self._game, info=chess.engine.INFO_ALL)
+            if self.time_manage and sigma == 0 and secs:
+                # a fresh virtual clock for every move: the engine plans about `secs` and may use between a fraction of it and about three times as much, depending on how settled the search looks
+                limit = chess.engine.Limit(depth=depth, white_clock=secs * 40, black_clock=secs * 40,
+                                           white_inc=0, black_inc=0, remaining_moves=40)
+            else:
+                limit = chess.engine.Limit(depth=depth, time=secs)
+            res = self.cpp.play(board, limit, game=self._game, info=chess.engine.INFO_ALL)
             if res.move is not None and sigma == 0 and self.ponder:   # not for the weak levels / opening noise
                 after = board.copy()                                   # keeps the move history (repetitions)
                 after.push(res.move)
