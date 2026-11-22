@@ -5,6 +5,7 @@ python evaluate_engine.py                                   # level 4, Elo 1800 
 python evaluate_engine.py --movetime 0.1 --games 20         # quicker moves, more games
 python evaluate_engine.py --level 5 --elos 2400 2800
 python evaluate_engine.py --nnue                            # test the neural network instead of the hand-written eval
+python evaluate_engine.py --tc 10+0.1 --games 100 --elos 2800 3000 --concurrency 3   # real game clock: 10 s + 0.1 s per move
 python evaluate_engine.py --concurrency 4                   # play 4 games at once (about 4x faster, use <= free CPU cores)
 """
 import argparse
@@ -22,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import chess
 import chess.engine
 
-from engine.ai.chess_ai import ChessAI
+from engine.ai.chess_ai import ChessAI, find_cpp_engine
 
 RESIGN_CP = 1000       # Stockfish's own score: game is decided after RESIGN_MOVES of its moves at/beyond +-RESIGN_CP
 RESIGN_MOVES = 4
@@ -69,8 +70,69 @@ def play_game(ai, sf, sf_time, ai_white, opening_seed, max_plies, resign=True):
         return "draw", board.ply()
     return ("win" if outcome.winner == ai_white else "loss"), board.ply()
 
+def play_game_clock(eng, sf, base, inc, ai_white, opening_seed, max_plies, resign=True):
+    """Both sides play with a game clock (base + inc seconds). The AI is the raw C++ engine (no book, no pondering), so the engine's own time management decides how long to think. A side whose clock reaches 0 loses."""
+    rng = random.Random(opening_seed)
+    board = chess.Board()
+    for _ in range(4):
+        board.push(rng.choice(list(board.legal_moves)))
+    clock = {chess.WHITE: base, chess.BLACK: base}
+    ai_color = chess.WHITE if ai_white else chess.BLACK
+    sf_color = not ai_color
+    token_ai, token_sf = object(), object()
+    streak = 0
+    while not board.is_game_over(claim_draw=True) and board.ply() < max_plies:
+        side = board.turn
+        limit = chess.engine.Limit(white_clock=clock[chess.WHITE], black_clock=clock[chess.BLACK],
+                                   white_inc=inc, black_inc=inc)
+        t0 = time.perf_counter()
+        if side == ai_color:
+            res = eng.play(board, limit, game=token_ai)
+        else:
+            res = sf.play(board, limit, info=chess.engine.INFO_SCORE, game=token_sf)
+        clock[side] -= time.perf_counter() - t0
+        if clock[side] <= 0:
+            return ("loss" if side == ai_color else "win"), board.ply()
+        clock[side] += inc
+        board.push(res.move)
+        if side == sf_color and resign and res.info.get("score") is not None:
+            cp = res.info["score"].pov(sf_color).score(mate_score=MATE_CP)
+            streak = (streak + 1 if streak >= 0 else 1) if cp >= RESIGN_CP else \
+                     (streak - 1 if streak <= 0 else -1) if cp <= -RESIGN_CP else 0
+            if streak >= RESIGN_MOVES:
+                return "loss", board.ply()
+            if streak <= -RESIGN_MOVES:
+                return "win", board.ply()
+    outcome = board.outcome(claim_draw=True)
+    if outcome is None or outcome.winner is None:
+        return "draw", board.ply()
+    return ("win" if outcome.winner == ai_color else "loss"), board.ply()
+
+def run_game_clock(a, sf_path, elo, g):
+    exe = find_cpp_engine()
+    if not exe:
+        sys.exit("--tc needs the C++ engine (engine/bin/chess_engine). Build it first.")
+    eng = chess.engine.SimpleEngine.popen_uci(exe)
+    sf = chess.engine.SimpleEngine.popen_uci(sf_path)
+    try:
+        cfg = {"Hash": 64, "UseNNUE": False}
+        if a.threads > 1 and "Threads" in eng.options:
+            cfg["Threads"] = a.threads
+        eng.configure(cfg)
+        opt = sf.options["UCI_Elo"]
+        scfg = {"UCI_LimitStrength": True, "UCI_Elo": max(opt.min, min(opt.max, elo)), "Threads": 1}
+        if "Hash" in sf.options:
+            scfg["Hash"] = 16
+        sf.configure(scfg)
+        return play_game_clock(eng, sf, a.tc_base, a.tc_inc, g % 2 == 0, g // 2, a.max_plies, not a.no_resign)
+    finally:
+        sf.quit()
+        eng.quit()
+
 def run_game(a, sf_path, elo, g):
     """One game with its own AI and Stockfish process (so several can run at once)"""
+    if a.tc:
+        return run_game_clock(a, sf_path, elo, g)
     ai = ChessAI(skill_level=a.level, use_nnue=a.nnue, time_limit=a.movetime, ponder=a.ponder, threads=a.threads)
     sf = chess.engine.SimpleEngine.popen_uci(sf_path)
     try:
@@ -104,12 +166,21 @@ def main():
     ap.add_argument("--elos", type=int, nargs="+", default=[1800, 2200, 2600], help="Stockfish Elo levels")
     ap.add_argument("--games", type=int, default=10, help="games per Elo level (even number is best)")
     ap.add_argument("--sf-time", type=float, default=0.1, help="seconds per Stockfish move")
+    ap.add_argument("--tc", default=None, metavar="BASE+INC", help="real game clock for both sides in seconds, e.g. 10+0.1 (replaces --movetime and --sf-time; " "the AI is then the raw engine with its own time management, no book or pondering)")
     ap.add_argument("--max-plies", type=int, default=300)
     ap.add_argument("--stockfish", default=None)
     ap.add_argument("--threads", type=int, default=1, help="search threads for the AI (Lazy SMP); use with a low --concurrency")
     ap.add_argument("--concurrency", type=int, default=1, help="games played at the same time (<= free CPU cores / 2; each game uses 2 engines)")
     ap.add_argument("--no-resign", action="store_true", help="play every game to the end instead of stopping decided games early (slower)")
     a = ap.parse_args()
+    a.tc_base = a.tc_inc = None
+    if a.tc:
+        try:
+            base, inc = a.tc.split("+")
+            a.tc_base, a.tc_inc = float(base), float(inc)
+        except ValueError:
+            sys.exit("--tc must look like 10+0.1 (base seconds + increment seconds)")
+        print(f"Time control: {a.tc_base:g} s + {a.tc_inc:g} s per move for both sides")
 
     sf_path = find_stockfish(a.stockfish)
     probe = chess.engine.SimpleEngine.popen_uci(sf_path)
