@@ -95,6 +95,10 @@ window instead, run `python main.py --windowed`.
 The board shows file letters (a-h) and rank numbers (1-8) along its edges; they flip with the board when you
 play Black. Moves for the AI's side are ignored while it is that side's turn.
 
+A move list sits to the right of the board, like on chess.com: one row per full move in standard notation, the
+latest move highlighted, and the result (1-0, 0-1 or 1/2-1/2) under the last move when the game ends. It scrolls to
+the newest move automatically; use the mouse wheel to look back. Undo (Z) and reset (R) update it.
+
 The game ends in checkmate or a draw: stalemate, insufficient material, threefold repetition or the fifty-move
 rule. The result appears in a box on the board; press Z to undo or R to start again.
 

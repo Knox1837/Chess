@@ -78,6 +78,73 @@ def draw_pieces(win, board, piece_images, flipped=False):
             if key in piece_images:
                 win.blit(piece_images[key], (col * SQUARE_SIZE, row * SQUARE_SIZE))
 
+# move list panel (to the right of the board)
+PANEL_BG = (38, 36, 33)
+ROW_ALT = (44, 42, 39)
+LAST_MOVE_BG = (88, 86, 82)
+HEADER_H = 40
+ROW_H = 30
+ROWS_VISIBLE = (HEIGHT - HEADER_H - 12) // ROW_H
+_panel_fonts = {}
+
+def _panel_font(size, bold=False):
+    key = (size, bold)
+    if key not in _panel_fonts:
+        _panel_fonts[key] = pygame.font.SysFont("arial", size, bold=bold)
+    return _panel_fonts[key]
+
+def move_list_max_scroll(n_plies, has_result=False):
+    """Highest scroll value (first visible row) for a move list with n_plies half-moves"""
+    rows = (n_plies + 1) // 2 + (1 if has_result else 0)
+    return max(0, rows - ROWS_VISIBLE)
+
+def draw_move_list(win, moves, scroll, result=None):
+    """Chess.com-style move list: one row per full move (number, White's move, Black's move).
+    moves: SAN strings in game order; scroll: index of the first visible row; result: '1-0', '0-1' or '1/2-1/2'."""
+    x0 = WIDTH
+    pygame.draw.rect(win, PANEL_BG, (x0, 0, PANEL_WIDTH, HEIGHT))
+    pygame.draw.line(win, (20, 20, 20), (x0, 0), (x0, HEIGHT), 2)
+
+    title = _panel_font(22, True).render("Moves", True, (235, 235, 235))
+    win.blit(title, (x0 + 14, (HEADER_H - title.get_height()) // 2))
+    pygame.draw.line(win, (62, 60, 57), (x0, HEADER_H), (x0 + PANEL_WIDTH, HEADER_H), 1)
+
+    num_w = 46
+    col_w = (PANEL_WIDTH - num_w - 14) // 2
+    full_rows = (len(moves) + 1) // 2
+    total_rows = full_rows + (1 if result else 0)
+    num_font, move_font = _panel_font(18), _panel_font(20, True)
+
+    for r in range(ROWS_VISIBLE):
+        idx = scroll + r
+        if idx >= total_rows:
+            break
+        y = HEADER_H + 6 + r * ROW_H
+        if idx % 2 == 1:
+            pygame.draw.rect(win, ROW_ALT, (x0, y, PANEL_WIDTH, ROW_H))
+        if idx >= full_rows:                                  # the result line under the last move
+            res = move_font.render(result, True, (235, 235, 235))
+            win.blit(res, (x0 + (PANEL_WIDTH - res.get_width()) // 2, y + (ROW_H - res.get_height()) // 2))
+            continue
+        num = num_font.render(f"{idx + 1}.", True, (150, 150, 150))
+        win.blit(num, (x0 + num_w - 8 - num.get_width(), y + (ROW_H - num.get_height()) // 2))
+        for c in (0, 1):
+            ply = idx * 2 + c
+            if ply >= len(moves):
+                break
+            cell = pygame.Rect(x0 + num_w + c * col_w, y + 2, col_w - 4, ROW_H - 4)
+            if ply == len(moves) - 1:                         # the latest move is highlighted
+                pygame.draw.rect(win, LAST_MOVE_BG, cell, border_radius=4)
+            txt = move_font.render(moves[ply], True, (240, 240, 240))
+            win.blit(txt, (cell.x + 8, cell.y + (cell.height - txt.get_height()) // 2))
+
+    if total_rows > ROWS_VISIBLE:                             # scrollbar
+        track_h = ROWS_VISIBLE * ROW_H
+        bar_h = max(24, track_h * ROWS_VISIBLE // total_rows)
+        max_scroll = total_rows - ROWS_VISIBLE
+        bar_y = HEADER_H + 6 + (track_h - bar_h) * scroll // max(1, max_scroll)
+        pygame.draw.rect(win, (100, 98, 94), (x0 + PANEL_WIDTH - 7, bar_y, 4, bar_h), border_radius=2)
+
 def draw_status(win, text, hint=None):
     """Draw the game status (check, checkmate, draws) on a light box in the middle of the board"""
     if not text:

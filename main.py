@@ -32,7 +32,6 @@ def install_fullscreen_hotkey():
 
     pygame.event.get = get
 
-
 def maximize_window():
     """Maximize the game window (best effort; returns True on success)."""
     try:
@@ -51,7 +50,6 @@ def maximize_window():
             pass
     return False
 
-
 def main():
     """Main program entry point"""
     # Smooth (instead of blocky) scaling when the window is enlarged
@@ -59,9 +57,9 @@ def main():
 
     # Setup pygame
     pygame.init()
-    # RESIZABLE lets you maximize / drag-resize the window; SCALED keeps the 600x600 game surface and stretches it to the window (mouse positions are converted automatically, so no layout changes).
+    # Resizable lets you maximize / drag-resize the window; SCALED keeps the game surface (the 600x600 board plus the move-list panel) and stretches it to the window (mouse positions are converted automatically, so no layout changes).
     flags = pygame.RESIZABLE | getattr(pygame, "SCALED", 0)
-    WIN = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+    WIN = pygame.display.set_mode((WIDTH + PANEL_WIDTH, HEIGHT), flags)
     if not WIN.get_flags() & getattr(pygame, "SCALED", 0):
         print("Note: scaled window mode is not available here, so a maximized window will not stretch the board.")
     install_fullscreen_hotkey()

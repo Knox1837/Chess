@@ -31,7 +31,7 @@ def show_menu(win, clock):
         # Draw title
         title_font = pygame.font.SysFont(None, 48)
         title = title_font.render("CHESS AI SYSTEM", True, (255, 255, 255))
-        win.blit(title, (WIDTH//2 - title.get_width()//2, 50))
+        win.blit(title, (win.get_width()//2 - title.get_width()//2, 50))
         
         # Draw menu items
         font = pygame.font.SysFont(None, 34)
@@ -46,7 +46,7 @@ def show_menu(win, clock):
         ]
         for i, inst in enumerate(instructions):
             text = inst_font.render(inst, True, (150, 150, 150))
-            win.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT - 40 + i * 30))
+            win.blit(text, (win.get_width()//2 - text.get_width()//2, HEIGHT - 40 + i * 30))
         
         pygame.display.flip()
         

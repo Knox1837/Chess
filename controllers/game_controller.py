@@ -7,6 +7,7 @@ import os
 
 class GameController:
     """Controls the chess game loop and user input"""
+    
     def __init__(self, win, clock, use_trained_ai=False, human_color=chess.WHITE):
         from engine.game.chess_game import ChessGame
         
@@ -76,6 +77,9 @@ class GameController:
         
         elif event.type == pygame.MOUSEMOTION:
             self.game.handle_mouse_motion(event.pos)
+        
+        elif event.type == pygame.MOUSEWHEEL:
+            self.game.handle_scroll(event.y)
     
     def update(self):
         """Update game state"""

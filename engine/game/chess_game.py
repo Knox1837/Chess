@@ -6,7 +6,7 @@ import pygame
 import threading
 from engine.game.piece_movement import ChessMovement
 from engine.ai.chess_ai import ChessAI, default_threads
-from ui.game_ui import load_piece_images, draw_board, draw_pieces, draw_status, draw_highlights, draw_coordinates
+from ui.game_ui import load_piece_images, draw_board, draw_pieces, draw_status, draw_highlights, draw_coordinates, draw_move_list, move_list_max_scroll
 from utils.config import *
 
 class ChessGame:
@@ -26,6 +26,9 @@ class ChessGame:
                            time_manage=strong_ai)   # strong AI thinks on your time
         self.ai_enabled = False
         self.ai_color = not human_color          # the AI plays the side the human did not pick
+        self.move_scroll = 0                     # first visible row of the move list
+        self._san = []                           # the game's moves in SAN, rebuilt when the moves change
+        self._san_key = ()
         self.ai_thinking = False
         self.ai_move_result = None   # Result posted here by background thread
         
@@ -108,6 +111,10 @@ class ChessGame:
         # Draw file letters and rank numbers
         draw_coordinates(win, self.board_flipped)
         
+        # Draw the move list to the right of the board
+        self._refresh_move_list()
+        draw_move_list(win, self._san, self.move_scroll, self._result_token())
+
         # Draw dragged piece if any
         self.movement.draw_dragged_piece(win, self.piece_images)
         
@@ -115,6 +122,27 @@ class ChessGame:
         status_text = self.get_game_status()
         draw_status(win, status_text, hint="R: new game    Z: undo" if self.is_game_over() else None)
     
+    def _result_token(self):
+        res = self.board.result(claim_draw=True)
+        return None if res == "*" else res
+
+    def _refresh_move_list(self):
+        """Rebuild the SAN list when the moves changed, and scroll to the newest move"""
+        key = tuple(self.board.move_stack)
+        if key != self._san_key:
+            b = self.board.root()
+            san = []
+            for m in key:
+                san.append(b.san(m))
+                b.push(m)
+            self._san, self._san_key = san, key
+            self.move_scroll = move_list_max_scroll(len(san), self._result_token() is not None)
+
+    def handle_scroll(self, dy):
+        """Mouse wheel over the move list (dy > 0 scrolls up)"""
+        top = move_list_max_scroll(len(self._san), self._result_token() is not None)
+        self.move_scroll = max(0, min(top, self.move_scroll - dy))
+
     def get_result(self):
         """The game result as text if the game is over (checkmate or any kind of draw), else None"""
         b = self.board
