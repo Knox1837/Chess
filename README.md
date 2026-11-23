@@ -8,7 +8,8 @@ neural-network evaluator trained on Lichess data, and tools to measure how stron
 - **Thinks on your time:** in the strong setting the engine keeps searching while you choose your move (pondering).
 - **Multi-threaded search and an opening book:** in the strong setting the engine searches with several threads
   (a quarter of your logical CPUs by default) and plays its first moves from an opening book.
-- **Strength:** roughly **2600-2650** against Stockfish limited to a given Elo, at 0.1 s per move
+- **Strength:** about **2800-2900** against Stockfish limited to a given Elo with a 10 s + 0.1 s game clock, and
+  roughly 2600-2650 at a fixed 0.1 s per move
   (benchmark games against Stockfish, see [Strength](#strength)). Search improvements since the first
   measurements gained much more in head-to-head matches (see [Comparing engine versions](#comparing-engine-versions))
   than they show against Stockfish.
@@ -94,6 +95,9 @@ window instead, run `python main.py --windowed`.
 The board shows file letters (a-h) and rank numbers (1-8) along its edges; they flip with the board when you
 play Black. Moves for the AI's side are ignored while it is that side's turn.
 
+The game ends in checkmate or a draw: stalemate, insufficient material, threefold repetition or the fifty-move
+rule. The result appears in a box on the board; press Z to undo or R to start again.
+
 ## Skill levels
 
 `ChessAI(skill_level=1..5)`. With the C++ engine:
@@ -103,15 +107,16 @@ play Black. Moves for the AI's side are ignored while it is that side's turn.
 | 1 | depth 1, deliberate mistakes (noise 220 cp) |
 | 2 | depth 2, noise 90 cp |
 | 3 | depth 4, noise 40 cp |
-| 4 | full strength, about 0.6 s per move |
-| 5 | full strength, about 2.5 s per move |
+| 4 | full strength, a time target of about 0.6 s per move (the real time varies with the position) |
+| 5 | full strength, a time target of about 2.5 s per move |
 
 Levels 1-3 score every move and add random noise, so they make human-like mistakes instead of random
-ones. Only level 4 has been benchmarked (see Strength); the others are not calibrated to an Elo. In the
-first three moves of a game the engine picks slightly noisy moves so games do not repeat.
+ones. Only level 4 has been benchmarked (see Strength); the others are not calibrated to an Elo. Outside
+the opening book, the first three moves of a game are slightly noisy so games do not repeat.
 
 The evaluation printed in the terminal during a game (e.g. `AI plays: Nf3 (eval: +0.35)`) is the
-engine's own score in pawns from White's point of view (`#3` = forced mate). It is not a Stockfish evaluation.
+engine's own score in pawns from White's point of view (`#3` = forced mate); moves played from the opening book
+show `eval: book`. It is not a Stockfish evaluation.
 
 ## How the engine works
 
@@ -120,17 +125,18 @@ engine's own score in pawns from White's point of view (`#3` = forced mate). It 
   extensions, killer/history move ordering (the history table also penalises quiet moves that were tried
   and failed to cut), static exchange evaluation (SEE) to order captures and to skip losing captures in
   quiescence search, quiescence search.
-- **Evaluation:** tapered middlegame/endgame piece-square tables (PeSTO) plus bishop pair, passed,
-  isolated and doubled pawns, rook files and a king pawn shield.
+- **Evaluation:** tapered middlegame/endgame piece-square tables (PeSTO values, lightly tuned on the Lichess
+  evaluations) plus bishop pair, passed, isolated and doubled pawns, rook files, a king pawn shield, piece
+  mobility and attacks on the king zone (see [Tuning the evaluation](#tuning-the-evaluation)).
 - **Optional neural evaluation:** a king-bucketed network seen from both players' sides (see Training).
-- **Time management:** a move gets its full time budget. The engine stops starting a new search depth after
-  75% of the move time (UCI option `SoftTime`, 20-100), and a depth that is cut off still counts if it already
-  found a better move.
+- **Time management:** with a game clock the engine plans each move from the time it has left and scales the plan
+  by how settled the search looks (see [Time management](#time-management)). With a fixed time per move it stops
+  starting a new search depth after 75% of that time (UCI option `SoftTime`, 20-100), and a depth that is cut
+  off still counts if it already found a better move.
 - **Pondering:** after the strong AI moves, it searches the position in the background while you think
-  (up to 30 s), so its next search starts with deep results for the likely replies. In a test against Stockfish
-  limited to 1800 (0.1 s per move) it guessed the reply 44% of the time; when it did, the next search was about
-  1 ply deeper, otherwise no gain, so about half a ply on average. It keeps one CPU core busy while you think.
-  Turn it off with `ChessAI(..., ponder=False)` (set in `engine/game/chess_game.py`).
+  (up to 30 s), so its next search starts with deep results for the likely replies. In an early test it guessed
+  the reply 44% of the time, which was worth about half a ply of extra depth on average. It keeps one CPU core
+  busy while you think. Turn it off with `ChessAI(..., ponder=False)` (set in `engine/game/chess_game.py`).
 - **Board and move generation:** the third-party `chess.hpp` library (see Credits). The engine speaks
   UCI, and `engine/ai/chess_ai.py` talks to it through `python-chess`.
 
@@ -159,91 +165,72 @@ engine's own score in pawns from White's point of view (`#3` = forced mate). It 
 | `HistLMR` | 0 | reduce moves with a good history score less (only has an effect with `LMR=1`) |
 
 Every search change is behind an option, so a build can be compared against itself with the option switched
-off (see [Comparing engine versions](#comparing-engine-versions)). With `RFP=0 FP=0 LMP=0 HistMalus=0 SEE=0` the
+off (see [Comparing engine versions](#comparing-engine-versions)). With `RFP=0 FP=0 LMP=0 HistMalus=0 SEE=0 Aspiration=0` the
 search is identical to the version before these changes. The `bench` command prints a node count that can be
 used to check that.
 
 ## Strength
 
-**Current estimate: roughly 2600-2650 against Stockfish limited to a given Elo** (single-threaded), with the engine at
-skill level 4 and both sides playing 0.1 s per move. This comes from benchmark games against Stockfish
-(`evaluate_engine.py`), not from a rating list or games against people, so use it to compare versions
-of this engine rather than as an official rating.
+**Current estimate against Stockfish limited to a given Elo (single-threaded):**
 
-Benchmark results (colours alternate from random 4-ply openings; Stockfish uses `UCI_LimitStrength`
-with the Elo shown):
+- **About 2800-2900 (centre ~2850) with a game clock of 10 s + 0.1 s per move** for both sides. This is the engine
+  as it actually plays: it plans its own time per move (about 230 ms on average here) and uses time management.
+- **Roughly 2600-2650 with a fixed 0.1 s per move** for both sides. The engine gets only 100 ms every move and no
+  time management, so it reads lower. It is the setting all the fixed-time tests in this README use.
 
-| Stockfish Elo setting | Games | W / D / L | Score | Performance estimate |
-|---|---|---|---|---|
-| 1800 | 10 | 10 / 0 / 0 | 100% | at least ~2310 (a clean sweep only gives a bound) |
-| 2200 | 10 | 9 / 0 / 1 | 90% | ~2580 |
-| 2600 | 60 (10 + 50) | 21 / 13 / 26 | 46% | ~2570 (the 50-game run alone: 15 / 12 / 23, 42%, ~2544) |
-| 2800 | 30 | 1 / 7 / 22 | 15% | ~2500 |
+Both come from benchmark games against Stockfish (`evaluate_engine.py`), not from a rating list or games against
+people, and Stockfish plays below its label at such short clocks, so the numbers probably lean high. Use them to
+compare versions of this engine rather than as an official rating, and only compare runs made with the same
+settings.
 
-Performance = Stockfish's Elo setting + 400 * log10(score / (1 - score)). The levels where the result was
-not a clean sweep agree to within about 100 Elo, which is how the 2500-2600 range was chosen.
+Colours alternate from random 4-ply openings, and Stockfish uses `UCI_LimitStrength` with the Elo shown.
+Performance = Stockfish's Elo setting + 400 * log10(score / (1 - score)).
 
-Later runs with more games (2600 and 2800 levels, 100 games each; the number is the average of the two
-levels' performance estimates; before the pruning and history changes):
+**With a game clock of 10 s + 0.1 s per move** (`--tc 10+0.1`, 100 games per level, 3 games at once):
 
-| Games played at once | Estimate | Time |
-|---|---|---|
-| 2 | ~2521 | 17 min |
-| 3 | ~2508 | 11 min |
-| 4 | ~2471 | 9 min |
+| Stockfish Elo setting | W / D / L | Score | Performance estimate |
+|---|---|---|---|
+| 3000 | 11 / 28 / 61 | 25% | ~2809 |
+| 3190 | 4 / 29 / 67 | 18% | ~2932 |
 
-After the pruning, history-penalty and SEE changes (100 games per level, 3 games at once):
+The average over the two levels of a run was ~2792 for the 2800 and 3000 levels and ~2901 for the 3000 and 3190
+levels. The estimates rise with the strength of the Stockfish level, which is why the figure is given as a range.
+3190 is the strongest setting of Stockfish's limited-strength mode.
 
-| Levels | Result | Estimate |
-|---|---|---|
-| 2600 and 2800 | overall estimate | ~2544 |
-| 2800 | 7W 17D 76L (16%) | ~2505 |
-| 2800 and 3000 | overall estimate | ~2586 |
-| 2800 and 3000, after the tuned evaluation | overall estimate | ~2657 |
-| 3000 only, 4 search threads (50 games) | overall estimate | ~2670 |
-| 3000 | 0W 17D 83L (8%) | ~2587 |
+**With a fixed 0.1 s per move** (100 games per level, 3 games at once): the 2800 and 3000 levels gave an overall
+estimate of ~2657. With 4 search threads, 50 games at the 3000 level gave ~2670.
 
-The same build therefore reads about 2500-2590 depending on the level and the run. The head-to-head tests show
-the changes are worth far more than this scale suggests (SEE alone +139 against the previous build), because
-games against a copy of the same engine exaggerate gains, and Stockfish's limited-strength mode compresses
-differences near the top of its range. Use the Stockfish figure as a slowly moving yardstick and
-`match_engines.py` to judge changes.
-
-Repeated 30-game-per-level runs of the same build scattered between about 2440 and 2600, which is what the
-sample size allows. The drift down with more parallel games is within the noise but fits what a laptop does
-when all cores are busy (lower clocks, so the engines search a little less in the same time).
-
-For comparison, the earlier pure-Python engine held draws against the 1900 setting in a small early test
-(about 6 games, longer thinking time), so the C++ engine is a large step up.
+The head-to-head tests below show the search and evaluation changes are worth more than these figures suggest
+(SEE alone +139 against the previous build): games against a copy of the same engine exaggerate gains, and
+Stockfish's limited-strength mode compresses differences near the top of its range. Use the Stockfish figure as a
+slowly moving yardstick and `match_engines.py` to judge changes.
 
 How to read it:
 
-- Stockfish's Elo limiter is calibrated for long time controls; at 0.1 s per move Stockfish plays below its
-  label, which flatters the engine's number somewhat. It is not comparable to FIDE or Lichess ratings.
-- With 10-60 games per level the margin is roughly +/-100 Elo, with 100 games about +/-40. Differences of a
-  few dozen points between two runs are noise; to compare two versions of the engine use `match_engines.py`.
-- The engine searches by time, so results depend on the CPU it runs on.
-- The first table (2 / 3 / 4 games at once) was measured before the pruning, history-penalty and SEE changes.
-  None of the Stockfish runs used pondering. A score close to 0% or 100% at one level makes that level's
-  estimate unreliable, so prefer levels where the score is between about 15% and 85%.
+- Stockfish's Elo limiter is calibrated for long time controls; at such short clocks Stockfish plays below its
+  label, which flatters the engine's number. It is not comparable to FIDE or Lichess ratings.
+- With 100 games per level the margin is roughly +/-40 Elo at a score near 50% and +/-65 or more near 20%.
+  Differences of a few dozen points between two runs are noise.
+- The engine searches by time, so results depend on the CPU it runs on and on the load: keep `--concurrency` at
+  or below half your physical cores and compare runs only at the same setting.
+- These runs use the engine directly, without the opening book or pondering. A score close to 0% or 100% at one
+  level makes that level's estimate unreliable, so prefer levels where the score is between about 15% and 85%.
 
 Reproduce it (needs `engine/stockfish.exe`, or pass `--stockfish PATH`):
 
 ```powershell
-python evaluate_engine.py --movetime 0.1 --games 20
-python evaluate_engine.py --movetime 0.1 --games 100 --elos 2600 2800 --concurrency 3
+python evaluate_engine.py --tc 10+0.1 --games 100 --elos 3000 3190 --concurrency 3
+python evaluate_engine.py --movetime 0.1 --games 100 --elos 2800 3000 --concurrency 3
 ```
 
-The script prints win/draw/loss counts, a performance estimate per level, and the total time taken.
+The script prints win/draw/loss counts, a performance estimate per level and the total time taken.
 `--concurrency N` plays N games at the same time (each game runs two engines, so keep N at or below half your
-physical cores; on an 8-core CPU use 3-4, and compare runs only at the same setting). Games that are clearly
-decided (Stockfish's own score beyond +-10 pawns for 4 moves in a row) are stopped early; `--no-resign` plays
-every game to the end. With `--tc BASE+INC` both sides play with a real game clock instead of a fixed time per move, for example
-`python evaluate_engine.py --tc 10+0.1 --games 100 --elos 2800 3000 --concurrency 3`; the engine then uses its
-own time management (no opening book or pondering) and a side whose clock runs out loses.
-Other flags: `--level`, `--sf-time`, `--nnue`, `--ponder` (let the AI think on
-Stockfish's time; needs spare CPU cores), `--max-plies`. Pick Elo levels close to the engine's strength,
-because a 100% or 0% score only gives a bound.
+physical cores). With `--tc BASE+INC` both sides play with a real game clock instead of a fixed time per move; the
+engine then uses its own time management (no opening book or pondering) and a side whose clock runs out loses.
+Games that are clearly decided (Stockfish's own score beyond +-10 pawns for 4 moves in a row) are stopped early;
+`--no-resign` plays every game to the end. Other flags: `--level`, `--sf-time`, `--nnue`, `--threads`, `--ponder`
+(let the AI think on Stockfish's time; fixed-time mode only; needs spare CPU cores), `--max-plies`. Pick Elo
+levels close to the engine's strength, because a 100% or 0% score only gives a bound.
 
 ## Time management
 
@@ -304,11 +291,11 @@ copying it to `engine/data/book.bin`. The evaluation scripts and `match_engines.
 `tune_eval.py` fits the weights of the hand-written evaluation (piece values and piece-square tables, passed,
 isolated and doubled pawns, rook files, bishop pair, king shield, tempo) to the Stockfish evaluations in the
 prepared data (`engine/data/processed/nnue` and `nnue2`, each with `bitboards.npy` and `labels.npy`). It also
-has two new terms that are off by default: piece **mobility** and **king-zone attacks** (squares near the enemy
+has two terms the original weights did not use: piece **mobility** and **king-zone attacks** (squares near the enemy
 king attacked by knights, bishops, rooks and queens). The score is linear in the weights, so the fit is exact
 and fast and needs only NumPy. The fit starts from the engine's current weights, which it reads from the
 engine itself (`evalparams` command), and writes a text file that the engine loads through the `EvalParams`
-option. Nothing about the engine changes until you load a file.
+option. Nothing changes until you load a file or bake it in (see below).
 
 ```powershell
 python tune_eval.py check                      # first: do the tuner's features match the engine's evaluation?
@@ -371,7 +358,7 @@ It checks that both engines know the requested options, so an old build that lac
 
 Reading the result: if the interval still contains 0 the change is not proven. About 300 games reveal a
 difference of 30-50 Elo, and 1000+ games are needed for 10-20 Elo. Compare only runs made with the same
-`--movetime`.
+`--movetime` or `--tc`.
 
 Results so far (300 games at 0.1 s per move unless noted; positive = the first option is stronger):
 
@@ -381,7 +368,6 @@ Results so far (300 games at 0.1 s per move unless noted; positive = the first o
 | `SoftTime=50` vs 75 (200 games) | -17 | [-61, +25] | keep 75 |
 | pruning (`RFP`, `FP`, `LMP`) vs none | +24 | [-9, +58] | on by default (a 120-game test at 0.05 s gave +29) |
 | `HistMalus=1` vs 0 | +42 | [+9, +76] | on by default |
-| default build vs the pruning-only build | +23 | [-11, +58] | consistent with the line above |
 | `SEE=2` vs 0 | +139 | [+103, +178] | on by default (a 120-game test at 0.05 s gave +101) |
 | `NullEval=1` vs 0 (400 games) | +9 | [-21, +38] | off (no evidence of a gain) |
 | `NullDepth=1` vs 0 (400 games) | -5 | [-35, +25] | off (no evidence of a gain) |
@@ -390,7 +376,6 @@ Results so far (300 games at 0.1 s per move unless noted; positive = the first o
 | `EvalParams`, unbounded fit, old terms only | -101 | [-142, -63] | rejected |
 | `EvalParams`, fit within 10 cp, old terms only | +7 | [-28, +42] | no evidence of a gain |
 | `EvalParams`, fit within 10 cp, with mobility and king zone (700 games pooled from 2 runs) | +18 | [-5, +42] | adopted as the default |
-| new build (lockless table, options off) vs the previous build | +23 | [-20, +66] | no change expected; the search is node-for-node identical, so this is noise |
 | `Aspiration=25` vs 0 | +33 | [+4, +63] | on by default (a 120-game test at 0.05 s gave +32) |
 | `Threads=4` vs 1 (200 games, 2 games at once) | +106 | [+62, +153] | the game uses several threads in the strong setting |
 | `LMR=1` alone vs the older build | -7 | [-42, +28] | off |
@@ -487,7 +472,8 @@ Chess/
 - **[chess-library](https://github.com/Disservin/chess-library)** by Disservin (MIT) - board, move
   generation and draw detection, used unmodified as `engine/cpp/chess.hpp`. Its license notice must stay
   at the top of that file.
-- **PeSTO evaluation tables** by Ronald Friederich - the piece-square tables used by the hand-written eval.
+- **PeSTO evaluation tables** by Ronald Friederich - the starting point of the hand-written eval's piece-square
+  tables (since lightly tuned).
 - **[Lichess evaluation database](https://database.lichess.org/)** (CC0) - training data for the network.
 - **[python-chess](https://python-chess.readthedocs.io/)** - used by the Python side for boards and the UCI link.
 - **[Stockfish](https://stockfishchess.org/)** - used only as an opponent for measuring strength; not bundled.
