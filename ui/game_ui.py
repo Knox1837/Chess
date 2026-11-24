@@ -83,8 +83,11 @@ PANEL_BG = (38, 36, 33)
 ROW_ALT = (44, 42, 39)
 LAST_MOVE_BG = (88, 86, 82)
 HEADER_H = 40
+FOOTER_H = 52
 ROW_H = 30
-ROWS_VISIBLE = (HEIGHT - HEADER_H - 12) // ROW_H
+ROWS_VISIBLE = (HEIGHT - HEADER_H - FOOTER_H - 12) // ROW_H
+NUM_W = 46
+COL_W = (PANEL_WIDTH - NUM_W - 14) // 2
 _panel_fonts = {}
 
 def _panel_font(size, bold=False):
@@ -98,9 +101,56 @@ def move_list_max_scroll(n_plies, has_result=False):
     rows = (n_plies + 1) // 2 + (1 if has_result else 0)
     return max(0, rows - ROWS_VISIBLE)
 
-def draw_move_list(win, moves, scroll, result=None):
-    """Chess.com-style move list: one row per full move (number, White's move, Black's move).
-    moves: SAN strings in game order; scroll: index of the first visible row; result: '1-0', '0-1' or '1/2-1/2'."""
+def panel_buttons():
+    """The four navigation buttons under the move list: start, back, forward, end"""
+    w, h, gap = 54, 34, 8
+    left = WIDTH + (PANEL_WIDTH - (4 * w + 3 * gap)) // 2
+    top = HEIGHT - FOOTER_H + 9
+    return {name: pygame.Rect(left + i * (w + gap), top, w, h) for i, name in enumerate(("start", "back", "fwd", "end"))}
+
+def panel_move_at(pos, scroll, n_plies):
+    """The half-move (0-based index) whose cell is at pos in the move list, or None"""
+    x, y = pos
+    if x < WIDTH or y < HEADER_H + 6:
+        return None
+    row = (y - (HEADER_H + 6)) // ROW_H
+    if row >= ROWS_VISIBLE:
+        return None
+    idx = scroll + row
+    col = 0 if x - WIDTH - NUM_W < COL_W else 1
+    ply = idx * 2 + col
+    return ply if ply < n_plies else None
+
+def _draw_nav_button(win, name, rect, enabled):
+    pygame.draw.rect(win, (62, 60, 57) if enabled else (46, 44, 41), rect, border_radius=5)
+    color = (230, 230, 230) if enabled else (100, 98, 94)
+    cx, cy = rect.center
+    tri_l = [(cx + 6, cy - 9), (cx + 6, cy + 9), (cx - 7, cy)]     # points left
+    tri_r = [(cx - 6, cy - 9), (cx - 6, cy + 9), (cx + 7, cy)]     # points right
+    if name == "start":
+        pygame.draw.polygon(win, color, [(x - 4, y) for x, y in tri_l])
+        pygame.draw.rect(win, color, (cx - 12, cy - 9, 3, 18))
+    elif name == "back":
+        pygame.draw.polygon(win, color, tri_l)
+    elif name == "fwd":
+        pygame.draw.polygon(win, color, tri_r)
+    else:
+        pygame.draw.polygon(win, color, [(x + 4, y) for x, y in tri_r])
+        pygame.draw.rect(win, color, (cx + 9, cy - 9, 3, 18))
+
+def draw_review_banner(win, text):
+    """A bar across the top of the board while an earlier position is shown"""
+    font = _panel_font(18, True)
+    surf = font.render(text, True, (245, 245, 245))
+    bar = pygame.Surface((WIDTH, surf.get_height() + 14), pygame.SRCALPHA)
+    bar.fill((30, 30, 30, 205))
+    bar.blit(surf, ((WIDTH - surf.get_width()) // 2, 7))
+    win.blit(bar, (0, 0))
+
+def draw_move_list(win, moves, scroll, result=None, current=None):
+    """Chess.com-style move list: one row per full move (number, White's move, Black's move). The current move is highlighted. If current is None, no move is highlighted."""
+    if current is None:
+        current = len(moves)
     x0 = WIDTH
     pygame.draw.rect(win, PANEL_BG, (x0, 0, PANEL_WIDTH, HEIGHT))
     pygame.draw.line(win, (20, 20, 20), (x0, 0), (x0, HEIGHT), 2)
@@ -109,8 +159,7 @@ def draw_move_list(win, moves, scroll, result=None):
     win.blit(title, (x0 + 14, (HEADER_H - title.get_height()) // 2))
     pygame.draw.line(win, (62, 60, 57), (x0, HEADER_H), (x0 + PANEL_WIDTH, HEADER_H), 1)
 
-    num_w = 46
-    col_w = (PANEL_WIDTH - num_w - 14) // 2
+    num_w, col_w = NUM_W, COL_W
     full_rows = (len(moves) + 1) // 2
     total_rows = full_rows + (1 if result else 0)
     num_font, move_font = _panel_font(18), _panel_font(20, True)
@@ -133,10 +182,15 @@ def draw_move_list(win, moves, scroll, result=None):
             if ply >= len(moves):
                 break
             cell = pygame.Rect(x0 + num_w + c * col_w, y + 2, col_w - 4, ROW_H - 4)
-            if ply == len(moves) - 1:                         # the latest move is highlighted
+            if ply == current - 1:                            # the move leading to the position on the board
                 pygame.draw.rect(win, LAST_MOVE_BG, cell, border_radius=4)
             txt = move_font.render(moves[ply], True, (240, 240, 240))
             win.blit(txt, (cell.x + 8, cell.y + (cell.height - txt.get_height()) // 2))
+
+    pygame.draw.line(win, (62, 60, 57), (x0, HEIGHT - FOOTER_H), (x0 + PANEL_WIDTH, HEIGHT - FOOTER_H), 1)
+    for name, rect in panel_buttons().items():
+        enabled = current > 0 if name in ("start", "back") else current < len(moves)
+        _draw_nav_button(win, name, rect, enabled)
 
     if total_rows > ROWS_VISIBLE:                             # scrollbar
         track_h = ROWS_VISIBLE * ROW_H

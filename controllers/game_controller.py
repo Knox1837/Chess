@@ -48,13 +48,25 @@ class GameController:
             elif event.key == pygame.K_s:
                 self.game.switch_sides()
             
+            # Review earlier positions: left/right = one move, up/home = start, down/end = back to the game
+            elif event.key == pygame.K_LEFT:
+                self.game.step_view(-1)
+            elif event.key == pygame.K_RIGHT:
+                self.game.step_view(1)
+            elif event.key in (pygame.K_UP, pygame.K_HOME):
+                self.game.set_view(0)
+            elif event.key in (pygame.K_DOWN, pygame.K_END):
+                self.game.go_live()
+            
             elif event.key == pygame.K_r:
+                self.game.go_live()
                 self.game.board.reset()
                 self.game.movement.selected_square = None
                 self.game.movement.valid_moves = []
                 print("Board reset")
             
             elif event.key == pygame.K_z:
+                self.game.go_live()
                 if self.game.board.move_stack:
                     self.game.board.pop()
                     self.game.movement.selected_square = None

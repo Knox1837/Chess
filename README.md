@@ -85,7 +85,10 @@ Option 2 needs no model file. The weaker skill levels (1-3) are still available 
 | A | Toggle AI on/off |
 | S | Switch sides with the AI (ignored while the AI is thinking) |
 | R | Reset board |
-| Z | Undo move |
+| Z | Undo move (first returns to the live game if you are reviewing) |
+| Left / Right | Step back / forward one move to look at earlier positions |
+| Up or Home / Down or End | Jump to the start / back to the live game |
+| Mouse wheel | Scroll the move list |
 | ESC | Return to menu |
 | F11 | Toggle fullscreen |
 
@@ -95,9 +98,15 @@ window instead, run `python main.py --windowed`.
 The board shows file letters (a-h) and rank numbers (1-8) along its edges; they flip with the board when you
 play Black. Moves for the AI's side are ignored while it is that side's turn.
 
-A move list sits to the right of the board, like on chess.com: one row per full move in standard notation, the
-latest move highlighted, and the result (1-0, 0-1 or 1/2-1/2) under the last move when the game ends. It scrolls to
-the newest move automatically; use the mouse wheel to look back. Undo (Z) and reset (R) update it.
+A move list sits to the right of the board, like on chess.com: one row per full move in standard notation and the
+result (1-0, 0-1 or 1/2-1/2) under the last move when the game ends. It scrolls to the newest move automatically;
+use the mouse wheel to look further back. Undo (Z) and reset (R) update it.
+
+To look at an earlier position, click any move in the list, click the buttons under it (start, back, forward,
+end) or use the arrow keys. The board then shows that position and the move that led to it is highlighted, with
+a "Viewing move N of M" banner. While you are looking back you cannot move pieces; the game itself carries on (if
+the AI is thinking, its move is still played and appears in the list, and the board stays where you are). Press
+End or Down, or click the last move, to return to the live game.
 
 The game ends in checkmate or a draw: stalemate, insufficient material, threefold repetition or the fifty-move
 rule. The result appears in a box on the board; press Z to undo or R to start again.
