@@ -1,7 +1,9 @@
 # Chess AI
 
-A chess game written in Python (pygame) with a fast C++ alpha-beta engine behind it, an optional
-neural-network evaluator trained on Lichess data, and tools to measure how strong it is.
+A chess game written in Python (pygame) backed by a fast C++ engine that works like a classic Stockfish-style
+engine, not like AlphaZero: it searches with alpha-beta (principal variation search, pruning, multi-threaded) and scores
+positions with a hand-written evaluation whose weights were tuned offline. It does not learn by playing against itself.
+An optional neural-network evaluator trained on Lichess data is included but off by default, and tools measure how strong it is.
 
 - **Play** against the AI, against a friend, or against Stockfish.
 - **C++ engine** (`engine/cpp/`): millions of nodes per second, searches 10+ plies in well under a second.

@@ -416,7 +416,7 @@ struct Options {
     int rfpMargin = 80;     // reverse futility pruning: cp per remaining depth (0 = off)
     int fpMargin = 120;     // futility pruning of quiet moves: cp per remaining depth (0 = off)
     int lmp = 1;            // late move pruning of quiet moves at low depth (0 = off)
-    int lmr = 0;            // log-based late move reductions (0 = old fixed 1/2 ply reductions)
+    int lmr = 2;            // late move reductions: 0 = old fixed 1/2 ply, 1 = log table, 2 = log table + improving/killer/history/PV adjustments
     int histMalus = 1;      // bounded history with a penalty for quiet moves that failed to cut (0 = old additive history)
     int histLmr = 0;        // reduce moves with a good history score less, poor ones more (0 = off)
     int nullEval = 0;       // only try the null move when the static eval is at or above beta (0 = off)
@@ -485,6 +485,8 @@ class Search {
     bool timed = false;
     Move killers[MAX_PLY + 2][2];
     int history[2][64][64];
+    static constexpr int NO_EVAL = -2 * INF;
+    int evalStack[MAX_PLY + 4];   // static eval per ply (NO_EVAL when unknown or in check), for the 'improving' flag
     std::mt19937_64 rng{std::random_device{}()};
 
     void reset(bool hasTime, double seconds) {
@@ -493,6 +495,7 @@ class Search {
         timed = hasTime;
         if (hasTime) deadline = Clock::now() + std::chrono::microseconds(int64_t(seconds * 1e6));
         std::memset(history, 0, sizeof(history));
+        for (int& v : evalStack) v = NO_EVAL;
         for (auto& k : killers) k[0] = k[1] = Move();
     }
 
@@ -501,8 +504,7 @@ class Search {
         return timed && Clock::now() >= deadline;
     }
 
-    // Static exchange evaluation: true if capturing on m.to() and then recapturing with the least valuable
-    // attacker each time leaves the mover with at least `threshold` centipawns. Pins are ignored.
+    // Static exchange evaluation: true if capturing on m.to() and then recapturing with the least valuable attacker each time leaves the mover with at least `threshold` centipawns. Pins are ignored.
     bool seeGe(const Move& m, int threshold) const {
         if (m.typeOf() == Move::CASTLING) return threshold <= 0;
         const Square to = m.to();
@@ -689,6 +691,15 @@ class Search {
         bool haveEval = useEval;
         if (useEval) staticEval = evaluate(bd);
 
+        // 'Improving': static eval better than two plies ago (LMR=2 only)
+        evalStack[ply] = NO_EVAL;
+        bool improving = true;
+        if (opts.lmr >= 2 && !inCheck && depth >= 3) {
+            if (!haveEval) { staticEval = evaluate(bd); haveEval = true; }
+            evalStack[ply] = staticEval;
+            if (ply >= 2 && evalStack[ply - 2] != NO_EVAL) improving = staticEval > evalStack[ply - 2];
+        }
+
         // Reverse futility pruning: far above beta at low depth, so the node would fail high anyway
         if (useEval && opts.rfpMargin > 0 && nonPawn && std::abs(beta) < MATE - 1000 &&
             staticEval - opts.rfpMargin * depth >= beta)
@@ -742,7 +753,11 @@ class Search {
                     if (depth >= 3 && i >= 3 && quiet && !inCheck && !bd.inCheck()) {
                         red = LMR_TABLE[std::min(depth, 63)][std::min(i, 63)];
                         if (pvNode) --red;
-                        if (opts.histLmr)
+                        if (opts.lmr >= 2) {
+                            if (!improving) ++red;                                   // position is getting worse: reduce more
+                            if (m == killers[ply][0] || m == killers[ply][1]) --red; // killers are likely good: reduce less
+                            red -= std::max(-2, std::min(2, history[stm][m.from().index()][m.to().index()] / 4096));
+                        } else if (opts.histLmr)
                             red -= std::max(-2, std::min(2, history[stm][m.from().index()][m.to().index()] / 4096));
                         red = std::max(0, std::min(red, depth - 2));
                     }
@@ -1033,7 +1048,7 @@ int main() {
                  "option name RFP type spin default 80 min 0 max 400\n"
                  "option name FP type spin default 120 min 0 max 600\n"
                  "option name LMP type spin default 1 min 0 max 1\n"
-                 "option name LMR type spin default 0 min 0 max 1\n"
+                 "option name LMR type spin default 2 min 0 max 2\n"
                  "option name HistMalus type spin default 1 min 0 max 1\n"
                  "option name HistLMR type spin default 0 min 0 max 1\n"
                  "option name SEE type spin default 2 min 0 max 2\n"
@@ -1062,7 +1077,7 @@ int main() {
             else if (name == "RFP") opts.rfpMargin = std::min(400, std::max(0, std::stoi(value)));
             else if (name == "FP") opts.fpMargin = std::min(600, std::max(0, std::stoi(value)));
             else if (name == "LMP") opts.lmp = std::stoi(value) != 0;
-            else if (name == "LMR") opts.lmr = std::stoi(value) != 0;
+            else if (name == "LMR") opts.lmr = std::min(2, std::max(0, std::stoi(value)));
             else if (name == "HistMalus") opts.histMalus = std::stoi(value) != 0;
             else if (name == "HistLMR") opts.histLmr = std::stoi(value) != 0;
             else if (name == "SEE") opts.see = std::min(2, std::max(0, std::stoi(value)));
