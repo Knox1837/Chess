@@ -84,7 +84,7 @@ def play_game(args, pair_index, a_white):
     eng_b = None
     try:
         eng_b = open_engine(args.b, parse_opts(args.b_opt), args.hash, "B")
-        limit = chess.engine.Limit(time=args.movetime)
+        limit = chess.engine.Limit(depth=args.depth) if args.depth else chess.engine.Limit(time=args.movetime)
         base, inc = args.tc_base, args.tc_inc            # game clock instead of a fixed time per move (--tc)
         clock = {chess.WHITE: base, chess.BLACK: base}
         used = {chess.WHITE: [0.0, 0], chess.BLACK: [0.0, 0]}
@@ -163,6 +163,7 @@ def main():
     ap.add_argument("--b-opt", action="append", metavar="Name=Value", help="UCI option for B (repeatable)")
     ap.add_argument("--games", type=int, default=100, help="total games (default 100)")
     ap.add_argument("--movetime", type=float, default=0.1, help="seconds per move for both engines")
+    ap.add_argument("--depth", type=int, default=0, help="fixed search depth per move for both engines (ignores time; compares evaluation quality, not speed)")
     ap.add_argument("--tc", default=None, metavar="BASE+INC", help="game clock in seconds for each side, e.g. 10+0.1 (replaces --movetime; a side that runs out of time loses)")
     ap.add_argument("--concurrency", type=int, default=1, help="games at the same time (<= free CPU cores)")
     ap.add_argument("--hash", type=int, default=64, help="Hash MB for each engine")
@@ -173,6 +174,8 @@ def main():
     args = ap.parse_args()
 
     args.tc_base = args.tc_inc = None
+    if args.depth:
+        args.tc = None                                   # a fixed depth replaces any clock
     if args.tc:
         try:
             base, inc = args.tc.split("+")
@@ -224,7 +227,7 @@ def main():
     if tot[1] and tot[3]:
         print(f"Average time per move: A {1000 * tot[0] / tot[1]:.0f} ms, B {1000 * tot[2] / tot[3]:.0f} ms"
               + (f"   |   games lost on time: {flags}" if args.tc else ""))
-    print(f"Settings: {('clock ' + args.tc) if args.tc else str(args.movetime) + 's/move'}, hash {args.hash} MB, A options {parse_opts(args.a_opt)}, "
+    print(f"Settings: {('depth ' + str(args.depth)) if args.depth else (('clock ' + args.tc) if args.tc else str(args.movetime) + 's/move')}, hash {args.hash} MB, A options {parse_opts(args.a_opt)}, "
           f"B options {parse_opts(args.b_opt)}")
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@
 cmake_minimum_required(VERSION 3.13)
 project(chess_engine LANGUAGES CXX)
 
-option(USE_NATIVE  "Tune for this CPU (-march=native); OFF gives a portable binary" ON)
+option(USE_NATIVE  "Tune for this CPU (-march=native, or /arch:AVX2 on MSVC); OFF gives a portable binary" ON)
 option(STATIC_LINK "Link the C++ runtime statically (MinGW: no extra DLLs needed)"  ON)
 option(WARNINGS    "Enable extra compiler warnings" OFF)
 set(ENGINE_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/engine/bin" CACHE PATH "Where chess_engine(.exe) is written")
@@ -42,6 +42,10 @@ target_link_libraries(chess_engine PRIVATE Threads::Threads)
 
 if(MSVC)
   target_compile_options(chess_engine PRIVATE /EHsc)
+  if(USE_NATIVE)
+    # AVX2 (Intel Haswell 2013+, AMD Ryzen): lets the compiler vectorize the NNUE loops
+    target_compile_options(chess_engine PRIVATE /arch:AVX2)
+  endif()
   if(WARNINGS)
     target_compile_options(chess_engine PRIVATE /W4)
   endif()

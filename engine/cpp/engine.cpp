@@ -21,6 +21,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
 
 using namespace chess;
 using Clock = std::chrono::steady_clock;
@@ -333,7 +336,26 @@ struct Net {
     std::vector<float> W1, b1, W2, b2, W3, b3, W4;
     float b4 = 0;
     bool ok = false;
+    // Quantized copy used by the fast search path (first layer x255, second layer x64, int16)
+    std::vector<int16_t> qW1, qb1, qW2t;   // qW2t is transposed: [32][2H]
 } net;
+
+constexpr float QA = 255.0f, QB = 64.0f;
+
+void quantizeNet() {
+    auto q = [](float v, float scale) {
+        const float r = std::round(v * scale);
+        return int16_t(std::max(-32767.0f, std::min(32767.0f, r)));
+    };
+    const int H = net.H;
+    net.qW1.resize(net.W1.size());
+    for (size_t i = 0; i < net.W1.size(); ++i) net.qW1[i] = q(net.W1[i], QA);
+    net.qb1.resize(H);
+    for (int i = 0; i < H; ++i) net.qb1[i] = q(net.b1[i], QA);
+    net.qW2t.resize(size_t(32) * 2 * H);
+    for (int i = 0; i < 2 * H; ++i)
+        for (int j = 0; j < 32; ++j) net.qW2t[size_t(j) * 2 * H + i] = q(net.W2[size_t(i) * 32 + j], QB);
+}
 
 bool loadNet(const std::string& path) {
     net = Net();
@@ -355,44 +377,57 @@ bool loadNet(const std::string& path) {
     rd(net.W4, 32);
     f.read(reinterpret_cast<char*>(&net.b4), 4);
     net.ok = bool(f);
+    if (net.ok) quantizeNet();
     return net.ok;
 }
 
-int evalNet(const Board& bd) {
+// Perspective c: 0 = White, 1 = Black. Each perspective has its own accumulator (king bucket of that colour's king).
+inline int kingBucket(const Board& bd, int c) {
+    const int ks = bd.kingSq(c == 0 ? Color::WHITE : Color::BLACK).index() ^ (c == 0 ? 0 : 56);
+    return ((ks & 7) >> 1) + ((ks >> 3) >= 2 ? 4 : 0);
+}
+
+// First layer for perspective c rebuilt from scratch (before the clipped ReLU)
+void netFullAcc(const Board& bd, int c, int bucket, float* a) {
     const int H = net.H;
-    float acc[2][1024];
-    const Color stm = bd.sideToMove();
-    for (int side = 0; side < 2; ++side) {
-        const Color pc = side == 0 ? stm : ~stm;
-        const int flip = pc == Color::WHITE ? 0 : 56;
-        const int ks = bd.kingSq(pc).index() ^ flip;
-        const int bucket = ((ks & 7) >> 1) + ((ks >> 3) >= 2 ? 4 : 0);
-        float* a = acc[side];
-        std::memcpy(a, net.b1.data(), H * sizeof(float));
-        for (int c = 0; c < 2; ++c) {
-            const Color col = c == 0 ? Color::WHITE : Color::BLACK;
-            for (int t = 0; t < 6; ++t) {
-                uint64_t bits = bd.pieces(PTS[t], col).getBits();
-                const int base = bucket * 768 + (t + (col == pc ? 0 : 6)) * 64;
-                while (bits) {
-                    const int sq = ctz(bits);
-                    bits &= bits - 1;
-                    const float* row = &net.W1[size_t(base + (sq ^ flip)) * H];
-                    for (int i = 0; i < H; ++i) a[i] += row[i];
-                }
+    const int flip = c == 0 ? 0 : 56;
+    std::memcpy(a, net.b1.data(), H * sizeof(float));
+    for (int cc = 0; cc < 2; ++cc) {
+        const Color col = cc == 0 ? Color::WHITE : Color::BLACK;
+        for (int t = 0; t < 6; ++t) {
+            uint64_t bits = bd.pieces(PTS[t], col).getBits();
+            const int base = bucket * 768 + (t + (cc == c ? 0 : 6)) * 64;
+            while (bits) {
+                const int sq = ctz(bits);
+                bits &= bits - 1;
+                const float* row = &net.W1[size_t(base + (sq ^ flip)) * H];
+                for (int i = 0; i < H; ++i) a[i] += row[i];
             }
         }
-        for (int i = 0; i < H; ++i) a[i] = std::min(1.0f, std::max(0.0f, a[i]));
     }
+}
+
+int netTail(float* h1);
+
+// Clipped ReLU on both accumulators (a0 = side to move), then the dense layers
+int netDense(const float* a0, const float* a1) {
+    const int H = net.H;
     float h1[32];
     std::memcpy(h1, net.b2.data(), sizeof(h1));
-    for (int side = 0; side < 2; ++side)
+    for (int side = 0; side < 2; ++side) {
+        const float* a = side == 0 ? a0 : a1;
         for (int i = 0; i < H; ++i) {
-            const float v = acc[side][i];
+            const float v = std::min(1.0f, std::max(0.0f, a[i]));
             if (v == 0.0f) continue;
             const float* w = &net.W2[size_t(side * H + i) * 32];
             for (int j = 0; j < 32; ++j) h1[j] += v * w[j];
         }
+    }
+    return netTail(h1);
+}
+
+// Last two layers (32 -> 32 -> 1), shared by the float and the quantized path
+int netTail(float* h1) {
     float h2[32];
     std::memcpy(h2, net.b3.data(), sizeof(h2));
     for (int i = 0; i < 32; ++i) {
@@ -407,10 +442,99 @@ int evalNet(const Board& bd) {
     return cp > MAX_CP ? MAX_CP : (cp < -MAX_CP ? -MAX_CP : cp);
 }
 
+// Reference evaluation: rebuilds everything for this position (used by the 'eval' command and NNUECheck)
+int evalNet(const Board& bd) {
+    float acc[2][1024];
+    const int stmIdx = bd.sideToMove() == Color::WHITE ? 0 : 1;
+    netFullAcc(bd, stmIdx, kingBucket(bd, stmIdx), acc[0]);
+    netFullAcc(bd, 1 - stmIdx, kingBucket(bd, 1 - stmIdx), acc[1]);
+    return netDense(acc[0], acc[1]);
+}
+
+// ---- Quantized fast path: int16 accumulators, int16 x int16 -> int32 dot products (AVX2 when available) ----
+inline void addRow(int16_t* d, const int16_t* r, int H) {
+    int i = 0;
+#if defined(__AVX2__)
+    for (; i + 16 <= H; i += 16)
+        _mm256_storeu_si256((__m256i*)(d + i), _mm256_add_epi16(_mm256_loadu_si256((const __m256i*)(d + i)),
+                                                                _mm256_loadu_si256((const __m256i*)(r + i))));
+#endif
+    for (; i < H; ++i) d[i] = int16_t(d[i] + r[i]);
+}
+
+inline void subRow(int16_t* d, const int16_t* r, int H) {
+    int i = 0;
+#if defined(__AVX2__)
+    for (; i + 16 <= H; i += 16)
+        _mm256_storeu_si256((__m256i*)(d + i), _mm256_sub_epi16(_mm256_loadu_si256((const __m256i*)(d + i)),
+                                                                _mm256_loadu_si256((const __m256i*)(r + i))));
+#endif
+    for (; i < H; ++i) d[i] = int16_t(d[i] - r[i]);
+}
+
+void netFullAccQ(const Board& bd, int c, int bucket, int16_t* a) {
+    const int H = net.H;
+    const int flip = c == 0 ? 0 : 56;
+    std::memcpy(a, net.qb1.data(), H * sizeof(int16_t));
+    for (int cc = 0; cc < 2; ++cc) {
+        const Color col = cc == 0 ? Color::WHITE : Color::BLACK;
+        for (int t = 0; t < 6; ++t) {
+            uint64_t bits = bd.pieces(PTS[t], col).getBits();
+            const int base = bucket * 768 + (t + (cc == c ? 0 : 6)) * 64;
+            while (bits) {
+                const int sq = ctz(bits);
+                bits &= bits - 1;
+                addRow(a, &net.qW1[size_t(base + (sq ^ flip)) * H], H);
+            }
+        }
+    }
+}
+
+inline int dotQ(const int16_t* x, const int16_t* w, int n) {
+    int i = 0;
+    int sum = 0;
+#if defined(__AVX2__)
+    __m256i acc = _mm256_setzero_si256();
+    for (; i + 16 <= n; i += 16)
+        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_loadu_si256((const __m256i*)(x + i)),
+                                                      _mm256_loadu_si256((const __m256i*)(w + i))));
+    __m128i s = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0x4E));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0xB1));
+    sum = _mm_cvtsi128_si32(s);
+#endif
+    for (; i < n; ++i) sum += int(x[i]) * int(w[i]);
+    return sum;
+}
+
+int netDenseQ(const int16_t* a0, const int16_t* a1) {
+    const int H = net.H;
+    alignas(32) int16_t act[2 * 1024];
+    for (int i = 0; i < H; ++i) {
+        act[i] = std::min<int16_t>(255, std::max<int16_t>(0, a0[i]));
+        act[H + i] = std::min<int16_t>(255, std::max<int16_t>(0, a1[i]));
+    }
+    float h1[32];
+    for (int j = 0; j < 32; ++j)
+        h1[j] = net.b2[j] + float(dotQ(act, &net.qW2t[size_t(j) * 2 * H], 2 * H)) * (1.0f / (QA * QB));
+    return netTail(h1);
+}
+
+// Quantized evaluation with a full rebuild (reference for the incremental path: results must be identical)
+int evalNetQ(const Board& bd) {
+    int16_t acc[2][1024];
+    const int stmIdx = bd.sideToMove() == Color::WHITE ? 0 : 1;
+    netFullAccQ(bd, stmIdx, kingBucket(bd, stmIdx), acc[0]);
+    netFullAccQ(bd, 1 - stmIdx, kingBucket(bd, 1 - stmIdx), acc[1]);
+    return netDenseQ(acc[0], acc[1]);
+}
+
 // Options
 struct Options {
     int hashMB = 64;
     bool useNNUE = true;
+    int contHist = 0;       // countermove move + 1-ply continuation history for quiet move ordering (0 = off)
+    bool nnueCheck = false;   // debug: compare the incremental NNUE value with a full rebuild at every evaluation
     int noise = 0;
     int softPercent = 75;   // don't start a new search depth after this % of the move time
     int rfpMargin = 80;     // reverse futility pruning: cp per remaining depth (0 = off)
@@ -475,6 +599,9 @@ inline int fromTT(int s, int ply) { return s > MATE - 1000 ? s - ply : (s < -MAT
 // Search
 struct Scored { Move m; int s; };
 
+std::atomic<uint64_t> nnueChecked{0}, nnueMismatch{0}, nnueDiffSum{0};
+std::atomic<int> nnueDiffMax{0};
+
 class Search {
    public:
     Board bd;
@@ -485,16 +612,153 @@ class Search {
     bool timed = false;
     Move killers[MAX_PLY + 2][2];
     int history[2][64][64];
+    // Countermove + continuation history, indexed by the previous move's (piece, to-square) slot = piece * 64 + to
+    static constexpr int SLOTS = 12 * 64;
+    std::vector<int16_t> contHist;   // [SLOTS][SLOTS]
+    Move counterMv[SLOTS];
+    int prevSlot[MAX_PLY + 4];       // slot of the move that led to each ply (-1 at the root and after a null move)
+    int slotOf(const Move& m) const { return int(bd.at(m.from())) * 64 + m.to().index(); }
     static constexpr int NO_EVAL = -2 * INF;
     int evalStack[MAX_PLY + 4];   // static eval per ply (NO_EVAL when unknown or in check), for the 'improving' flag
     std::mt19937_64 rng{std::random_device{}()};
 
+    // NNUE accumulators: one entry per ply, filled lazily. Each perspective (0 = White, 1 = Black) is updated from the
+    // nearest computed ancestor by adding/removing the few features that changed, or rebuilt when its king changed bucket.
+    struct AccInfo {
+        int nchg;
+        int16_t chg[4];          // plane * 64 + square (plane = colour * 6 + piece type)
+        int8_t sign[4];          // +1 piece appeared, -1 piece disappeared
+        int bucket[2];
+        bool refresh[2];         // king bucket changed on the move into this ply: needs a rebuild
+        bool computed[2];
+    };
+    AccInfo accInfo[MAX_PLY + 4];
+    std::vector<int16_t> accBuf; // [(MAX_PLY + 4)][2][H], quantized
+    bool nnueActive = false;
+
+    int16_t* accPtr(int ply, int c) { return &accBuf[(size_t(ply) * 2 + c) * net.H]; }
+
+    void initAcc() {
+        nnueActive = opts.useNNUE && net.ok;
+        if (!nnueActive) return;
+        const size_t need = size_t(MAX_PLY + 4) * 2 * net.H;
+        if (accBuf.size() != need) accBuf.assign(need, int16_t(0));
+        AccInfo& a = accInfo[0];
+        a.nchg = 0;
+        for (int c = 0; c < 2; ++c) {
+            a.bucket[c] = kingBucket(bd, c);
+            a.refresh[c] = true;
+            a.computed[c] = false;
+        }
+    }
+
+    void doMove(const Move& m, int ply) {
+        if (opts.contHist) prevSlot[ply + 1] = slotOf(m);
+        if (!nnueActive) { bd.makeMove(m); return; }
+        uint64_t pre[12];
+        for (int cc = 0; cc < 2; ++cc)
+            for (int t = 0; t < 6; ++t)
+                pre[cc * 6 + t] = bd.pieces(PTS[t], cc == 0 ? Color::WHITE : Color::BLACK).getBits();
+        bd.makeMove(m);
+        AccInfo& a = accInfo[ply + 1];
+        const AccInfo& p = accInfo[ply];
+        a.nchg = 0;
+        for (int c = 0; c < 2; ++c) { a.bucket[c] = p.bucket[c]; a.refresh[c] = false; a.computed[c] = false; }
+        bool kingMoved[2] = {false, false};
+        bool overflow = false;
+        for (int cc = 0; cc < 2; ++cc)
+            for (int t = 0; t < 6; ++t) {
+                const int plane = cc * 6 + t;
+                const uint64_t post = bd.pieces(PTS[t], cc == 0 ? Color::WHITE : Color::BLACK).getBits();
+                uint64_t diff = pre[plane] ^ post;
+                if (!diff) continue;
+                if (t == 5) kingMoved[cc] = true;
+                while (diff) {
+                    const int sq = ctz(diff);
+                    diff &= diff - 1;
+                    if (a.nchg < 4) {
+                        a.chg[a.nchg] = int16_t(plane * 64 + sq);
+                        a.sign[a.nchg] = (post >> sq) & 1 ? 1 : -1;
+                        ++a.nchg;
+                    } else overflow = true;
+                }
+            }
+        for (int c = 0; c < 2; ++c) {
+            if (kingMoved[c]) {
+                const int nb = kingBucket(bd, c);
+                if (nb != p.bucket[c]) { a.refresh[c] = true; a.bucket[c] = nb; }
+            }
+            if (overflow) a.refresh[c] = true;
+        }
+    }
+
+    void doNull(int ply) {
+        prevSlot[ply + 1] = -1;
+        bd.makeNullMove();
+        if (!nnueActive) return;
+        AccInfo& a = accInfo[ply + 1];
+        const AccInfo& p = accInfo[ply];
+        a.nchg = 0;
+        for (int c = 0; c < 2; ++c) { a.bucket[c] = p.bucket[c]; a.refresh[c] = false; a.computed[c] = false; }
+    }
+
+    void updateAcc(int c, int n) {
+        int j = n;
+        for (;; --j) {
+            if (accInfo[j].computed[c]) break;
+            if (accInfo[j].refresh[c]) { j = -1; break; }   // entry 0 always has refresh set, so this ends
+        }
+        if (j < 0) {
+            netFullAccQ(bd, c, accInfo[n].bucket[c], accPtr(n, c));
+            accInfo[n].computed[c] = true;
+            return;
+        }
+        const int H = net.H;
+        const int flip = c == 0 ? 0 : 56;
+        for (int k = j + 1; k <= n; ++k) {
+            int16_t* dst = accPtr(k, c);
+            std::memcpy(dst, accPtr(k - 1, c), H * sizeof(int16_t));
+            const AccInfo& a = accInfo[k];
+            for (int e = 0; e < a.nchg; ++e) {
+                const int plane = a.chg[e] >> 6, sq = a.chg[e] & 63;
+                const int cc = plane >= 6 ? 1 : 0, t = plane - cc * 6;
+                const int16_t* row = &net.qW1[size_t(a.bucket[c] * 768 + (t + (cc == c ? 0 : 6)) * 64 + (sq ^ flip)) * H];
+                if (a.sign[e] > 0) addRow(dst, row, H);
+                else subRow(dst, row, H);
+            }
+            accInfo[k].computed[c] = true;
+        }
+    }
+
+    int evalPos(int ply) {
+        if (!nnueActive) return evalHand(bd);
+        updateAcc(0, ply);
+        updateAcc(1, ply);
+        const int stmIdx = bd.sideToMove() == Color::WHITE ? 0 : 1;
+        const int v = netDenseQ(accPtr(ply, stmIdx), accPtr(ply, 1 - stmIdx));
+        if (opts.nnueCheck) {
+            ++nnueChecked;
+            if (v != evalNetQ(bd)) ++nnueMismatch;            // incremental vs rebuild: integer math, must be identical
+            const int d = std::abs(v - evalNet(bd));          // quantized vs float: the accuracy cost of int16
+            nnueDiffSum += d;
+            int m = nnueDiffMax.load();
+            while (d > m && !nnueDiffMax.compare_exchange_weak(m, d)) {}
+        }
+        return v;
+    }
+
     void reset(bool hasTime, double seconds) {
+        initAcc();
         nodes = 0;
         stopped = false;
         timed = hasTime;
         if (hasTime) deadline = Clock::now() + std::chrono::microseconds(int64_t(seconds * 1e6));
         std::memset(history, 0, sizeof(history));
+        if (opts.contHist) {
+            contHist.assign(size_t(SLOTS) * SLOTS, int16_t(0));
+            for (Move& c : counterMv) c = Move();
+        }
+        for (int& v : prevSlot) v = -1;
         for (int& v : evalStack) v = NO_EVAL;
         for (auto& k : killers) k[0] = k[1] = Move();
     }
@@ -504,7 +768,8 @@ class Search {
         return timed && Clock::now() >= deadline;
     }
 
-    // Static exchange evaluation: true if capturing on m.to() and then recapturing with the least valuable attacker each time leaves the mover with at least `threshold` centipawns. Pins are ignored.
+    // Static exchange evaluation: true if capturing on m.to() and then recapturing with the least valuable
+    // attacker each time leaves the mover with at least `threshold` centipawns. Pins are ignored.
     bool seeGe(const Move& m, int threshold) const {
         if (m.typeOf() == Move::CASTLING) return threshold <= 0;
         const Square to = m.to();
@@ -586,7 +851,14 @@ class Search {
             } else if (m.typeOf() == Move::PROMOTION) s = 900000 + int(m.promotionType());
             else if (m == killers[ply][0]) s = 800000;
             else if (m == killers[ply][1]) s = 790000;
-            else s = history[stm][m.from().index()][m.to().index()];
+            else if (opts.contHist) {
+                const int prev = prevSlot[ply];
+                if (prev >= 0 && counterMv[prev] == m) s = 780000;      // the reply that refuted the previous move before
+                else {
+                    s = history[stm][m.from().index()][m.to().index()];
+                    if (prev >= 0) s += contHist[size_t(prev) * SLOTS + slotOf(m)];
+                }
+            } else s = history[stm][m.from().index()][m.to().index()];
             out[n++] = {m, s};
         }
         return n;
@@ -602,7 +874,7 @@ class Search {
         ++nodes;
         if ((nodes & 2047) == 0 && timeUp()) stopped = true;
         if (stopped) return 0;
-        if (ply >= MAX_PLY) return evaluate(bd);
+        if (ply >= MAX_PLY) return evalPos(ply);
 
         const bool inCheck = bd.inCheck();
         Movelist ml;
@@ -612,7 +884,7 @@ class Search {
             if (ml.empty()) return -MATE + ply;
             stand = -INF;
         } else {
-            stand = evaluate(bd);
+            stand = evalPos(ply);
             if (stand >= beta) return stand;
             if (stand > alpha) alpha = stand;
             if (stand + 1000 < alpha) return stand;
@@ -629,7 +901,7 @@ class Search {
                 if (stand + ORDER_VAL[victim] + 200 < alpha && m.typeOf() != Move::PROMOTION) continue;
                 if (opts.see >= 2 && m.typeOf() != Move::PROMOTION && !seeGe(m, 0)) continue;   // losing capture
             }
-            bd.makeMove(m);
+            doMove(m, ply);
             const int score = -qsearch(-beta, -alpha, ply + 1, qd + 1);
             bd.unmakeMove(m);
             if (stopped) return 0;
@@ -654,7 +926,7 @@ class Search {
             if (bd.isRepetition(1)) return 0;
             if (bd.occ().count() <= 4 && bd.isInsufficientMaterial()) return 0;
         }
-        if (ply >= MAX_PLY) return evaluate(bd);
+        if (ply >= MAX_PLY) return evalPos(ply);
 
         const bool inCheck = bd.inCheck();
         if (inCheck) ++depth;
@@ -689,13 +961,13 @@ class Search {
         int staticEval = 0;
         const bool useEval = !pvNode && !inCheck && depth <= 6 && (opts.rfpMargin > 0 || opts.fpMargin > 0);
         bool haveEval = useEval;
-        if (useEval) staticEval = evaluate(bd);
+        if (useEval) staticEval = evalPos(ply);
 
         // 'Improving': static eval better than two plies ago (LMR=2 only)
         evalStack[ply] = NO_EVAL;
         bool improving = true;
         if (opts.lmr >= 2 && !inCheck && depth >= 3) {
-            if (!haveEval) { staticEval = evaluate(bd); haveEval = true; }
+            if (!haveEval) { staticEval = evalPos(ply); haveEval = true; }
             evalStack[ply] = staticEval;
             if (ply >= 2 && evalStack[ply - 2] != NO_EVAL) improving = staticEval > evalStack[ply - 2];
         }
@@ -706,10 +978,10 @@ class Search {
             return staticEval - opts.rfpMargin * depth;
 
         if (allowNull && !inCheck && depth >= 3 && beta < MATE - 1000 && bd.hasNonPawnMaterial(bd.sideToMove())) {
-            if (opts.nullEval && !haveEval) { staticEval = evaluate(bd); haveEval = true; }
+            if (opts.nullEval && !haveEval) { staticEval = evalPos(ply); haveEval = true; }
             if (!opts.nullEval || staticEval >= beta) {
                 const int R = opts.nullDepth ? 3 + depth / 4 : 3 + (depth > 6);
-                bd.makeNullMove();
+                doNull(ply);
                 const int s = -negamax(depth - R, -beta, -beta + 1, ply + 1, false);
                 bd.unmakeNullMove();
                 if (stopped) return 0;
@@ -732,7 +1004,8 @@ class Search {
             pickBest(mv, n, i);
             const Move m = mv[i].m;
             const bool quiet = !bd.isCapture(m) && m.typeOf() != Move::PROMOTION;
-            bd.makeMove(m);
+            const int mslot = opts.contHist ? slotOf(m) : 0;   // before the move is made
+            doMove(m, ply);
             // Futility and late-move pruning of quiet moves (never in check, never when giving check)
             if (i > 0 && quiet && !pvNode && !inCheck && best > -MATE + 1000 && !bd.inCheck()) {
                 if (opts.fpMargin > 0 && depth <= 3 && staticEval + opts.fpMargin * depth <= alpha) {
@@ -756,7 +1029,9 @@ class Search {
                         if (opts.lmr >= 2) {
                             if (!improving) ++red;                                   // position is getting worse: reduce more
                             if (m == killers[ply][0] || m == killers[ply][1]) --red; // killers are likely good: reduce less
-                            red -= std::max(-2, std::min(2, history[stm][m.from().index()][m.to().index()] / 4096));
+                            int hs = history[stm][m.from().index()][m.to().index()];
+                            if (opts.contHist && prevSlot[ply] >= 0) hs += contHist[size_t(prevSlot[ply]) * SLOTS + mslot];
+                            red -= std::max(-2, std::min(2, hs / 4096));
                         } else if (opts.histLmr)
                             red -= std::max(-2, std::min(2, history[stm][m.from().index()][m.to().index()] / 4096));
                         red = std::max(0, std::min(red, depth - 2));
@@ -783,6 +1058,17 @@ class Search {
                                 updateHistory(h, bonus);
                                 for (int j = 0; j < nq; ++j)       // earlier quiet moves did not cut: penalise them
                                     updateHistory(history[stm][quiets[j].from().index()][quiets[j].to().index()], -bonus);
+                                if (opts.contHist && prevSlot[ply] >= 0) {
+                                    const size_t row = size_t(prevSlot[ply]) * SLOTS;
+                                    counterMv[prevSlot[ply]] = m;
+                                    auto upd = [&](int slot, int b) {
+                                        int v = contHist[row + slot];
+                                        updateHistory(v, b);
+                                        contHist[row + slot] = int16_t(v);
+                                    };
+                                    upd(mslot, bonus);
+                                    for (int j = 0; j < nq; ++j) upd(slotOf(quiets[j]), -bonus);
+                                }
                             } else {
                                 h = std::min(h + depth * depth, 1000000);
                             }
@@ -853,7 +1139,7 @@ class Search {
                 for (int i = 0; i < n; ++i) {
                     pickBest(mv, n, i);
                     const Move m = mv[i].m;
-                    bd.makeMove(m);
+                    doMove(m, 0);
                     int s;
                     if (i == 0) s = -negamax(depth - 1, -beta0, -alpha, 1, true);
                     else {
@@ -918,7 +1204,7 @@ class Search {
         double bestNoisy = -1e18;
         int bestTrue = 0;
         for (int i = 0; i < n; ++i) {
-            bd.makeMove(mv[i].m);
+            doMove(mv[i].m, 0);
             const int s = -negamax(depth - 1, -INF, INF, 1, true);
             bd.unmakeMove(mv[i].m);
             if (stopped) break;
@@ -1020,6 +1306,11 @@ void bench() {
         total += searcher.nodes;
     }
     const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
+    if (opts.nnueCheck) {
+        const uint64_t n = std::max<uint64_t>(1, nnueChecked.load());
+        emit("nnuecheck evaluations " + std::to_string(nnueChecked.load()) + " mismatches " + std::to_string(nnueMismatch.load()) +
+             " | int16 vs float: mean abs diff " + std::to_string(double(nnueDiffSum.load()) / double(n)) + " cp, max " + std::to_string(nnueDiffMax.load()) + " cp");
+    }
     emit("bench nodes " + std::to_string(total) + " time " + std::to_string(int(secs * 1000)) +
          " nps " + std::to_string(uint64_t(total / secs)));
 }
@@ -1041,6 +1332,8 @@ int main() {
             emit("id name PyChessCpp 1.0\nid author you\n"
                  "option name Hash type spin default 64 min 1 max 4096\n"
                  "option name UseNNUE type check default true\n"
+                 "option name ContHist type spin default 0 min 0 max 1\n"
+                 "option name NNUECheck type check default false\n"
                  "option name EvalFile type string default <empty>\n"
                  "option name EvalParams type string default <empty>\n"
                  "option name Noise type spin default 0 min 0 max 1000\n"
@@ -1072,6 +1365,8 @@ int main() {
             while (!value.empty() && value[0] == ' ') value.erase(0, 1);
             if (name == "Hash") { joinSearch(); opts.hashMB = std::max(1, std::stoi(value)); resizeTT(opts.hashMB); }
             else if (name == "UseNNUE") opts.useNNUE = (value == "true" || value == "1");
+            else if (name == "ContHist") opts.contHist = std::stoi(value) != 0;
+            else if (name == "NNUECheck") opts.nnueCheck = (value == "true" || value == "1");
             else if (name == "Noise") opts.noise = std::max(0, std::stoi(value));
             else if (name == "SoftTime") opts.softPercent = std::min(100, std::max(20, std::stoi(value)));
             else if (name == "RFP") opts.rfpMargin = std::min(400, std::max(0, std::stoi(value)));
@@ -1144,6 +1439,30 @@ int main() {
         } else if (cmd == "eval") {
             emit("eval hand " + std::to_string(evalHand(gameBoard)) + " nnue " +
                  std::to_string(net.ok ? evalNet(gameBoard) : 0));
+        } else if (cmd == "nnuebench") {
+            // Timing breakdown of one NNUE evaluation (needs a net loaded with EvalFile)
+            joinSearch();
+            if (!net.ok) { emit("info string nnuebench: no net loaded (setoption name EvalFile value <nnue.bin>)"); }
+            else {
+                const int N = 20000;
+                volatile int sink = 0;
+                auto ns = [&](auto&& f) {
+                    const auto t = Clock::now();
+                    for (int i = 0; i < N; ++i) f(i);
+                    return std::chrono::duration<double, std::nano>(Clock::now() - t).count() / N;
+                };
+                static int16_t q0[1024], q1[1024];
+                netFullAccQ(gameBoard, 0, kingBucket(gameBoard, 0), q0);
+                netFullAccQ(gameBoard, 1, kingBucket(gameBoard, 1), q1);
+                const double fullF = ns([&](int) { sink = sink + evalNet(gameBoard); });
+                const double fullQ = ns([&](int) { sink = sink + evalNetQ(gameBoard); });
+                const double rebuild = ns([&](int i) { netFullAccQ(gameBoard, i & 1, i & 7, q0); sink = sink + q0[0]; });
+                const double dense = ns([&](int i) { q0[0] = int16_t(i & 7); sink = sink + netDenseQ(q0, q1); });
+                std::ostringstream o;
+                o << "info string nnuebench hidden " << net.H << " | float full eval " << int(fullF) << " ns | int16 full eval "
+                  << int(fullQ) << " ns | one accumulator rebuild " << int(rebuild) << " ns | dense layers " << int(dense) << " ns";
+                emit(o.str());
+            }
         } else if (cmd == "bench") {
             joinSearch();
             bench();
