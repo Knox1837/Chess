@@ -81,6 +81,8 @@ const PieceType PTS[6] = {PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP,
 //  Hand-written evaluation (identical to the Python engine's evaluate())
 int MGT[2][7][64], EGT[2][7][64];
 uint64_t FILE_BB[8], ADJ_FILES[8], PASSED_MASK[2][64], FRONT_SAME[2][64], SHIELD[2][64];
+uint64_t BACK_MASK[2][64], OUTPOST_ATK[2][64];   // for backward pawns / knight outposts
+constexpr uint64_t DARK_SQ = 0xAA55AA55AA55AA55ULL;
 
 uint64_t ranksAhead(int rank, bool white) {
     uint64_t m = 0;
@@ -97,6 +99,10 @@ struct EvalParams {
     int iso[2], dbl[2], rookOpen[2], rookSemi[2], bpair[2], shield[2];
     int tempo;
     int mob[2][4], kz[2][4];      // knight, bishop, rook, queen: mobility area / attacks on the enemy king zone
+    // Extra terms (all counts, own minus opponent): protected pawn, phalanx pawn, backward pawn, knight outpost,
+    // rook on the 7th, bad bishop (own pawns on its colour), enemy piece attacked by a pawn, free passed pawn
+    int extra[2][8];
+    bool extraOn;                 // any extra weight is non-zero
     bool dynamic;                 // any mobility or king-zone weight is non-zero (needs attack maps)
 };
 EvalParams EP;
@@ -110,6 +116,10 @@ void finalizeParams(EvalParams& p) {
     for (int ph = 0; ph < 2; ++ph)
         for (int t = 0; t < 4; ++t)
             if (p.mob[ph][t] || p.kz[ph][t]) p.dynamic = true;
+    p.extraOn = false;
+    for (int ph = 0; ph < 2; ++ph)
+        for (int k = 0; k < 8; ++k)
+            if (p.extra[ph][k]) p.extraOn = true;
 }
 
 void setDefaultParams(EvalParams& p) {
@@ -161,6 +171,7 @@ std::string dumpParams(const EvalParams& p) {
     line("tempo", &p.tempo, 1);
     line("mob_mg", p.mob[0], 4);        line("mob_eg", p.mob[1], 4);
     line("kz_mg", p.kz[0], 4);          line("kz_eg", p.kz[1], 4);
+    line("extra_mg", p.extra[0], 8);    line("extra_eg", p.extra[1], 8);
     return o.str();
 }
 
@@ -195,6 +206,8 @@ bool parseParams(std::istream& f, EvalParams& p, std::string& err) {
         else if (key == "mob_eg") ok = rd(p.mob[1], 4);
         else if (key == "kz_mg") ok = rd(p.kz[0], 4);
         else if (key == "kz_eg") ok = rd(p.kz[1], 4);
+        else if (key == "extra_mg") ok = rd(p.extra[0], 8);
+        else if (key == "extra_eg") ok = rd(p.extra[1], 8);
         if (!ok) { err = "bad line: " + key; return false; }
     }
     finalizeParams(p);
@@ -241,6 +254,8 @@ void initEval() {
                     if (ff >= 0 && ff < 8) m |= 1ULL << (rr * 8 + ff);
             }
             SHIELD[ci][sq] = m;
+            BACK_MASK[ci][sq] = ADJ_FILES[f] & ~ahead;      // adjacent files, same rank or behind
+            OUTPOST_ATK[ci][sq] = ADJ_FILES[f] & ahead;     // adjacent files, ahead: where an attacking enemy pawn would stand
         }
     }
 }
@@ -288,6 +303,51 @@ int evalHand(const Board& bd) {
         }
         mg[ci] = m;
         eg[ci] = e;
+    }
+    if (EP.extraOn) {
+        const uint64_t occ = bd.occ().getBits();
+        uint64_t pa[2];
+        pa[0] = ((pawns[0] << 9) & ~FILE_BB[0]) | ((pawns[0] << 7) & ~FILE_BB[7]);
+        pa[1] = ((pawns[1] >> 7) & ~FILE_BB[0]) | ((pawns[1] >> 9) & ~FILE_BB[7]);
+        for (int ci = 0; ci < 2; ++ci) {
+            const int oi = 1 - ci;
+            const Color color = ci == 0 ? Color::WHITE : Color::BLACK;
+            const Color ocolor = ci == 0 ? Color::BLACK : Color::WHITE;
+            const uint64_t ownp = pawns[ci], oppp = pawns[oi];
+            int c[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            c[0] = popcnt(ownp & pa[ci]);                                   // protected pawns
+            c[1] = popcnt(ownp & ((ownp << 1) & ~FILE_BB[0]));              // phalanx pairs
+            uint64_t it = ownp;
+            while (it) {
+                const int sq = ctz(it);
+                it &= it - 1;
+                const int stop = sq + (ci == 0 ? 8 : -8);
+                if (stop < 0 || stop > 63) continue;
+                if (((pa[oi] >> stop) & 1) && !(ownp & BACK_MASK[ci][sq])) ++c[2];            // backward
+                if (!(oppp & PASSED_MASK[ci][sq]) && !((occ >> stop) & 1)) ++c[7];            // free passed pawn
+            }
+            it = bd.pieces(PieceType::KNIGHT, color).getBits();
+            while (it) {
+                const int sq = ctz(it);
+                it &= it - 1;
+                const int rel = ci == 0 ? (sq >> 3) : 7 - (sq >> 3);
+                if (rel >= 3 && rel <= 5 && ((pa[ci] >> sq) & 1) && !(oppp & OUTPOST_ATK[ci][sq])) ++c[3];   // outpost
+            }
+            c[4] = popcnt(bd.pieces(PieceType::ROOK, color).getBits() & (0xFFULL << (ci == 0 ? 48 : 8)));      // rook on the 7th
+            it = bd.pieces(PieceType::BISHOP, color).getBits();
+            while (it) {
+                const int sq = ctz(it);
+                it &= it - 1;
+                c[5] += popcnt(ownp & (((DARK_SQ >> sq) & 1) ? DARK_SQ : ~DARK_SQ));                          // bad bishop
+            }
+            const uint64_t targets = bd.pieces(PieceType::KNIGHT, ocolor).getBits() | bd.pieces(PieceType::BISHOP, ocolor).getBits() |
+                                     bd.pieces(PieceType::ROOK, ocolor).getBits() | bd.pieces(PieceType::QUEEN, ocolor).getBits();
+            c[6] = popcnt(targets & pa[ci]);                                // pieces attacked by a pawn
+            for (int k = 0; k < 8; ++k) {
+                mg[ci] += EP.extra[0][k] * c[k];
+                eg[ci] += EP.extra[1][k] * c[k];
+            }
+        }
     }
     if (EP.dynamic) {
         // Mobility and king-zone terms from the union of squares each piece type attacks
@@ -533,7 +593,8 @@ int evalNetQ(const Board& bd) {
 struct Options {
     int hashMB = 64;
     bool useNNUE = true;
-    int contHist = 0;       // countermove move + 1-ply continuation history for quiet move ordering (0 = off)
+    int iir = 4;            // internal iterative reduction: searched 1 ply less at nodes without a hash move, from this depth (0 = off)
+    int contHist = 1;       // countermove move + 1-ply continuation history for quiet move ordering (0 = off)
     bool nnueCheck = false;   // debug: compare the incremental NNUE value with a full rebuild at every evaluation
     int noise = 0;
     int softPercent = 75;   // don't start a new search depth after this % of the move time
@@ -989,6 +1050,9 @@ class Search {
             }
         }
 
+        // Internal iterative reduction: with no hash move the ordering is poor, so spend one ply less here
+        if (opts.iir && depth >= opts.iir && !inCheck && ttMove.move() == 0) --depth;
+
         Movelist ml;
         movegen::legalmoves(ml, bd);
         if (ml.empty()) return inCheck ? -MATE + ply : 0;
@@ -1332,7 +1396,8 @@ int main() {
             emit("id name PyChessCpp 1.0\nid author you\n"
                  "option name Hash type spin default 64 min 1 max 4096\n"
                  "option name UseNNUE type check default true\n"
-                 "option name ContHist type spin default 0 min 0 max 1\n"
+                 "option name IIR type spin default 4 min 0 max 12\n"
+                 "option name ContHist type spin default 1 min 0 max 1\n"
                  "option name NNUECheck type check default false\n"
                  "option name EvalFile type string default <empty>\n"
                  "option name EvalParams type string default <empty>\n"
@@ -1365,6 +1430,7 @@ int main() {
             while (!value.empty() && value[0] == ' ') value.erase(0, 1);
             if (name == "Hash") { joinSearch(); opts.hashMB = std::max(1, std::stoi(value)); resizeTT(opts.hashMB); }
             else if (name == "UseNNUE") opts.useNNUE = (value == "true" || value == "1");
+            else if (name == "IIR") opts.iir = std::min(12, std::max(0, std::stoi(value)));
             else if (name == "ContHist") opts.contHist = std::stoi(value) != 0;
             else if (name == "NNUECheck") opts.nnueCheck = (value == "true" || value == "1");
             else if (name == "Noise") opts.noise = std::max(0, std::stoi(value));

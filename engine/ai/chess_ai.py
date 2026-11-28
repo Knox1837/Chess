@@ -365,7 +365,7 @@ class ChessAI:
             return
         try:
             eng = chess.engine.SimpleEngine.popen_uci(exe)
-            cfg = {"Hash": 64, "UseNNUE": False}
+            cfg = {"Hash": 256, "UseNNUE": False}      # 64 MB (4M entries) is refilled within one move at 4 threads
             if self.threads > 1 and "Threads" in eng.options:
                 cfg["Threads"] = self.threads
             if self.time_manage and "TimeManage" in eng.options:
